@@ -7,6 +7,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Search, Heart, Edit, Plus, RefreshCcw, Edit3, ListMusic } from 'lucide-react';
 import TagEditor from '@/components/TagEditor';
 import { api } from '@/lib/api';
+import { toast } from 'sonner';
+import { isAxiosError } from 'axios';
 import { useGenerateAllM3U } from '@/hooks/useGenerateAllM3U';
 
 interface Song {
@@ -207,8 +209,9 @@ export default function Home() {
 
   const handleSaveTags = async (song: Song) => {
     try {
-      await api.put('audios/update', {
+      const result = await api.put('audios/update', {
         path: song.FilePath,
+        cover_data: song.Cover.startsWith('data:') ? song.Cover : undefined,
         tags: [{
           title: song.Title,
           artist: song.Artist,
@@ -240,10 +243,17 @@ export default function Home() {
         }]
       });
 
-      fetchSongs(pagination.current_page);
+      if (!result.success) throw new Error(result.message || '儲存失敗，請重試');
+      if (song.Cover.startsWith('data:') && !result.cover_path) throw new Error('伺服器未確認封面已儲存，請重試');
+      await fetchSongs(pagination.current_page);
       setEditingSong(null);
+      toast.success(result.message || '標籤已儲存');
     } catch (error) {
       console.error('Error saving tags:', error);
+      if (isAxiosError(error) && typeof error.response?.data?.detail === 'string') {
+        throw new Error(error.response.data.detail);
+      }
+      throw error;
     }
   };
 
