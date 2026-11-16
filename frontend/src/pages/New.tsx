@@ -346,10 +346,10 @@ export default function NewMusicPage() {
             })
 
             // 更新當前會話狀態
-            await refreshSessionStatus(fileId)
+            const session = await refreshSessionStatus(fileId)
 
-            // 設定建議的最終檔案名稱
-            const suggestedFilename = currentSession?.suggested_filename || `01 - ${currentSession?.original_filename}`
+            // 使用此次請求取得的最新標籤檔名，避免讀到舊的 React state。
+            const suggestedFilename = session.suggested_filename || `01 - ${session.original_filename}`
             setFinalFilename(suggestedFilename)
 
             // 準備檔案
@@ -363,21 +363,20 @@ export default function NewMusicPage() {
 
     // 準備檔案
     const finalizeFile = async (fileId: string, filename: string) => {
-        try {
-            setProgress(90)
-            const data = await api.post('music-import/finalize', {
-                file_id: fileId,
-                final_filename: filename
-            })
-
-            // 更新當前會話狀態
-            await refreshSessionStatus(fileId)
-            setProgress(95)
-
-        } catch (error) {
-            console.error('檔案準備失敗:', error)
-            setError(error instanceof Error ? error.message : '檔案準備失敗')
+        if (!filename.trim()) {
+            throw new Error('最終檔案名稱不能為空')
         }
+
+        setProgress(90)
+        const data = await api.post('music-import/finalize', {
+            file_id: fileId,
+            final_filename: filename
+        })
+
+        // 顯示後端實際採用的檔名；準備失敗時由呼叫端停止後續移動。
+        setFinalFilename(data.preview_final_path.split('/').pop())
+        await refreshSessionStatus(fileId)
+        setProgress(95)
     }
 
     // 確認移動檔案
@@ -386,6 +385,8 @@ export default function NewMusicPage() {
 
         try {
             setIsLoading(true)
+            setError(null)
+            await finalizeFile(currentSession.file_id, finalFilename)
             const data = await api.post('music-import/confirm-move', {
                 file_id: currentSession.file_id
             })
@@ -414,19 +415,15 @@ export default function NewMusicPage() {
 
     // 刷新會話狀態
     const refreshSessionStatus = async (fileId: string) => {
-        try {
-            const data = await api.get('music-import/status', { file_id: fileId })
+        const data = await api.get('music-import/status', { file_id: fileId })
 
-            if (data.success) {
-                setCurrentSession(prev => ({
-                    ...prev,
-                    ...data.file_info,
-                    file_id: fileId
-                }))
-            }
-        } catch (error) {
-            console.error('刷新會話狀態失敗:', error)
+        if (!data.success) {
+            throw new Error('刷新會話狀態失敗')
         }
+
+        const session: ImportSession = { ...data.file_info, file_id: fileId }
+        setCurrentSession(session)
+        return session
     }
 
     // 取消匯入
@@ -583,19 +580,22 @@ export default function NewMusicPage() {
                                             <Input
                                                 value={finalFilename}
                                                 onChange={(e) => setFinalFilename(e.target.value)}
+                                                disabled={isLoading}
                                                 className="mt-1"
                                             />
                                         </div>
                                         <div className="col-span-2 space-y-2">
                                             <label className="block text-sm font-medium">最終路徑</label>
-                                            <p className="text-gray-600 text-sm">{currentSession.preview_final_path}</p>
+                                            <p className="text-gray-600 text-sm">
+                                                {currentSession.preview_final_path?.replace(/[^/]*$/, () => finalFilename)}
+                                            </p>
                                         </div>
                                     </div>
 
                                     <div className="flex space-x-4 justify-end">
                                         <Button
                                             onClick={confirmMove}
-                                            disabled={isLoading}
+                                            disabled={isLoading || !finalFilename.trim()}
                                             className="bg-gray-600 hover:bg-gray-700"
                                         >
                                             確認移動檔案
