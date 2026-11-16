@@ -14,8 +14,10 @@ class AudioTagsResponse(BaseModel):
 class AudioUpdateRequest(BaseModel):
     path: str
     tags: List[Dict[str, Any]]
+    cover_data: Optional[str] = None
 
 class AudioUpdateResponse(BaseModel):
     success: bool
     message: Optional[str] = None
     updated_tags: Optional[Dict[str, Any]] = None
+    cover_path: Optional[str] = None

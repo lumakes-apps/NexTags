@@ -5,6 +5,9 @@ from app.dependencies.mp3tag_reader import read_audio_tags
 from app.dependencies.mp3tag_writer import write_tags
 from app.dependencies.redis_cache import redis_cache
 from app.dependencies.utils.replaygain import generate_replaygain
+from app.dependencies.utils.cover_art import decode_cover_data, write_audio_cover
+from app.dependencies.navidrome_hook import request_navidrome_refresh
+from pathlib import Path
 from app.router.config import get_config
 from app.services.shared_state import RedisDoc
 import os
@@ -14,6 +17,7 @@ from typing import Any, Dict, List, Optional
 import math
 
 router = APIRouter(prefix="/audios", tags=["tools"])
+MUSIC_ROOT = Path('/Music')
 
 def _scan_folder_sync(folder_path: str) -> List[str]:
     """同步掃描單一資料夾中的音訊檔案"""
@@ -577,20 +581,31 @@ async def debug_audio_tags(file_path: str = Query(..., description="音訊檔案
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"讀取標籤時發生錯誤: {str(e)}")
 
-def _write_tags_and_refresh_sync(path: str, merged_tags: dict) -> bool:
+def _write_tags_and_refresh_sync(path: str, merged_tags: dict, cover_data: Optional[str] = None) -> Optional[str]:
     """寫入標籤並刷新 Redis catalog（同步、阻塞，需在執行緒池中執行）。"""
+    cover = decode_cover_data(cover_data) if cover_data is not None else None
     success = write_tags(path, merged_tags)
     if not success:
-        return False
+        raise OSError('無法更新檔案標籤')
+    cover_path = write_audio_cover(path, cover) if cover else None
     # 更新完標籤後，同步刷新 Redis catalog，避免列表與播放清單讀到舊資料。
     if redis_cache is not None:
         redis_cache.upsert_audio_record(path, read_audio_tags(path))
-    return True
+        if cover:
+            for record in redis_cache.get_audio_records([get_folder_from_path(path)]):
+                sibling = record.get('file_path', '')
+                if sibling != path and Path(sibling).parent == Path(path).parent:
+                    redis_cache.upsert_audio_record(sibling, record['tags'])
+    if cover:
+        request_navidrome_refresh('audio_cover_update', {'file_path': path, 'cover_path': cover_path})
+    return cover_path
 
 @router.put("/update", response_model=AudioUpdateResponse)
 async def update_audio_tags(request: AudioUpdateRequest):
     """更新音訊檔案的標籤"""
     try:
+        if not Path(request.path).resolve().is_relative_to(MUSIC_ROOT.resolve()):
+            raise HTTPException(status_code=400, detail="音檔必須位於音樂資料夾內")
         if not os.path.exists(request.path):
             raise HTTPException(status_code=404, detail="檔案不存在")
 
@@ -605,22 +620,21 @@ async def update_audio_tags(request: AudioUpdateRequest):
         # 寫標籤 + 刷新 catalog 都是阻塞 I/O（mutagen 寫檔、遠端掛載 stat、Redis），
         # 丟到執行緒池，避免卡住 event loop 影響其他請求。
         loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(
-            None, _write_tags_and_refresh_sync, request.path, merged_tags
+        cover_path = await loop.run_in_executor(
+            None, _write_tags_and_refresh_sync, request.path, merged_tags, request.cover_data
         )
-
-        if not success:
-            return AudioUpdateResponse(
-                success=False,
-                message="無法更新檔案標籤"
-            )
 
         return AudioUpdateResponse(
             success=True,
-            message="成功更新標籤",
-            updated_tags=merged_tags
+            message="標籤與封面已儲存" if request.cover_data is not None else "標籤已儲存",
+            updated_tags=merged_tags,
+            cover_path=cover_path
         )
         
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新標籤時發生錯誤: {str(e)}")
 
