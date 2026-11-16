@@ -22,7 +22,7 @@ from app.schemas.music_import import (
     ImportStatus, AudioFormat
 )
 from app.dependencies.mp3tag_reader import read_audio_tags
-from app.dependencies.mp3tag_writer import write_tags
+from app.dependencies.mp3tag_writer import coerce_number, write_tags
 from app.dependencies.redis_cache import redis_cache
 from app.dependencies.navidrome_hook import request_navidrome_refresh
 from app.dependencies.utils.audio_converter import convert_to_flac
@@ -585,6 +585,16 @@ def _convert_audio_file_impl(request: ConvertFileRequest):
             import_sessions[request.file_id]['errors'].append(f"轉換失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"檔案轉換失敗: {str(e)}")
 
+def generate_suggested_filename(tags: Dict[str, Any], audio_format: str) -> str:
+    """依目前的標籤產生檔名，空值使用可辨識的預設名稱。"""
+    track_num = (coerce_number(tags.get('tracknumber')) or '1').zfill(2)
+    title = tags.get('title')
+    if isinstance(title, list):
+        title = title[0] if title else None
+    title = str(title).strip() if title is not None else ''
+    return f"{track_num} - {title or '未知標題'}.{audio_format}"
+
+
 @router.post("/extract-tags", response_model=ExtractTagsResponse)
 async def extract_music_tags(request: ExtractTagsRequest):
     """提取音樂檔案標籤"""
@@ -627,15 +637,7 @@ def _extract_music_tags_impl(request: ExtractTagsRequest):
             import_sessions[request.file_id]['replaygain_applied'] = False
 
         # 生成建議的檔案名稱
-        track_num = tags.get('tracknumber', '1')
-        title = tags.get('title', '未知標題')
-
-        # 格式化軌道編號
-        if isinstance(track_num, list):
-            track_num = track_num[0] if track_num else '1'
-        track_num = str(track_num).split('/')[0].zfill(2)  # 取得軌道編號並補零
-
-        suggested_filename = f"{track_num} - {title}.{session.get('format', 'flac')}"
+        suggested_filename = generate_suggested_filename(tags, session.get('format', 'flac'))
 
         # 更新匯入狀態
         update_import_status(
@@ -686,12 +688,18 @@ def _update_music_tags_impl(request: UpdateTagsRequest):
         
         if not success:
             raise HTTPException(status_code=500, detail="標籤更新失敗")
+
+        tags = read_audio_tags(temp_path)
+        if not tags:
+            raise HTTPException(status_code=500, detail="無法讀取更新後的檔案標籤")
         
         # 更新匯入狀態
         update_import_status(
             request.file_id,
             ImportStatus.TAGS_EDITED,
-            updated_tags=request.tags
+            updated_tags=tags,
+            extracted_tags=tags,
+            suggested_filename=generate_suggested_filename(tags, session.get('format', 'flac'))
         )
         
         logger.info(f"標籤更新成功: {temp_path}")
@@ -699,7 +707,7 @@ def _update_music_tags_impl(request: UpdateTagsRequest):
         return UpdateTagsResponse(
             success=True,
             message="標籤更新成功",
-            updated_tags=request.tags
+            updated_tags=tags
         )
         
     except HTTPException:
