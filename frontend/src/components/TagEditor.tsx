@@ -37,7 +37,7 @@ interface Song {
 interface TagEditorProps {
   song: Song | null;
   onClose: () => void;
-  onSave: (song: Song) => void;
+  onSave: (song: Song) => Promise<void>;
 }
 
 export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
@@ -47,11 +47,15 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
   const [availableTags, setAvailableTags] = useState<string[]>([]);
   const [coverImage, setCoverImage] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isReadingCover, setIsReadingCover] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [generatingReplayGain, setGeneratingReplayGain] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (song) {
+      setSaveError(null);
       setEditedSong({
         ...song,
         AlbumArtist: song.AlbumArtist || '',
@@ -74,7 +78,7 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
       });
       // 設置封面圖片 - 使用 API 端點
       if (song.Cover) {
-        const imageUrl = `/api/images/cover?path=${encodeURIComponent(song.Cover)}`;
+        const imageUrl = `/api/images/cover?path=${encodeURIComponent(song.Cover)}&v=${Date.now()}`;
         setCoverImage(imageUrl);
       } else {
         setCoverImage(null);
@@ -130,22 +134,36 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
   };
 
   const handleImageClick = () => {
+    if (isSaving) return;
     fileInputRef.current?.click();
+  };
+
+  const selectCoverImage = (file: File) => {
+    if (isSaving || isReadingCover) return;
+    if (!['image/jpeg', 'image/png'].includes(file.type) || file.size > 10 * 1024 * 1024) {
+      setSaveError('請選擇 10 MB 以下的 JPEG 或 PNG 封面');
+      return;
+    }
+    setSaveError(null);
+    setIsReadingCover(true);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result);
+      setCoverImage(result);
+      handleInputChange('Cover', result);
+      setIsReadingCover(false);
+    };
+    reader.onerror = () => {
+      setSaveError('無法讀取圖片，請重新選擇');
+      setIsReadingCover(false);
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleImageChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file && file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const result = e.target?.result as string;
-        setCoverImage(result);
-        // 更新編輯的歌曲資料中的封面路徑
-        // 注意：這裡應該將圖片上傳到伺服器並獲得路徑，目前僅作為本地預覽
-        handleInputChange('Cover', result);
-      };
-      reader.readAsDataURL(file);
-    }
+    if (file) selectCoverImage(file);
+    event.target.value = '';
   };
 
   const handleDragOver = (event: React.DragEvent) => {
@@ -165,20 +183,12 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
     const files = event.dataTransfer.files;
     const file = files[0];
 
-    if (file && file.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const result = e.target?.result as string;
-        setCoverImage(result);
-        handleInputChange('Cover', result);
-      };
-      reader.readAsDataURL(file);
-    }
+    if (file) selectCoverImage(file);
   };
 
   const removeCoverImage = () => {
-    setCoverImage(null);
-    handleInputChange('Cover', '');
+    setCoverImage(song.Cover ? `/api/images/cover?path=${encodeURIComponent(song.Cover)}&v=${Date.now()}` : null);
+    handleInputChange('Cover', song.Cover);
   };
 
   const convertToPinyin = async (field: 'Title' | 'Artist' | 'Album' | 'AlbumArtist' | 'Composer' | 'Performer') => {
@@ -288,9 +298,16 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
     handleInputChange('Genre', newGenres);
   };
 
-  const handleSave = () => {
-    if (editedSong) {
-      onSave(editedSong);
+  const handleSave = async () => {
+    if (!editedSong || isSaving || isReadingCover) return;
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      await onSave(editedSong);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : '儲存失敗，請重試');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -302,7 +319,7 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
       <div className="bg-white w-128 h-full shadow-xl flex flex-col">
         <div className="flex items-center justify-between p-4 border-b bg-white">
           <h2 className="text-lg font-semibold">編輯標籤</h2>
-          <Button variant="ghost" size="sm" onClick={onClose}>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={isSaving} aria-label="關閉標籤編輯器">
             <X className="h-4 w-4" />
           </Button>
         </div>
@@ -330,7 +347,9 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
                     alt="Album Cover"
                     className="w-full h-full object-cover rounded-2xl"
                   />
-                  <button
+                  {editedSong.Cover.startsWith('data:') && <button
+                    aria-label="取消更換封面"
+                    disabled={isSaving || isReadingCover}
                     onClick={(e) => {
                       e.stopPropagation();
                       removeCoverImage();
@@ -338,7 +357,7 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
                     className="absolute top-2 right-2 bg-gray-500 hover:bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center transition-colors"
                   >
                     <X className="h-3 w-3" />
-                  </button>
+                  </button>}
                 </div>
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center text-white">
@@ -359,13 +378,15 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*"
+              accept="image/jpeg,image/png"
+              disabled={isSaving || isReadingCover}
               onChange={handleImageChange}
               className="hidden"
             />
             <label className="text-xs text-center text-gray-500 block mt-2">
               {coverImage ? '點擊更換圖片或拖放新圖片' : '點擊圖片上傳或拖放圖片'}
             </label>
+            {editedSong.Cover.startsWith('data:') && <p role="status" className="text-sm text-center mt-2">封面尚未儲存，請點擊「保存變更」</p>}
           </div>
           <div className="border p-4 rounded-xl bg-white grid gap-4">
             <div className="flex items-end bg-white rounded-lg gap-4">
@@ -708,9 +729,10 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
         </div>
 
         <div className="p-4 border-t bg-white">
-          <Button onClick={handleSave} className="w-full flex items-center gap-2">
+          {saveError && <p role="alert" className="text-sm text-red-600 mb-2">{saveError}</p>}
+          <Button onClick={handleSave} disabled={isSaving || isReadingCover} className="w-full flex items-center gap-2">
             <Save className="h-4 w-4" />
-            保存變更
+            {isSaving ? '儲存中...' : '保存變更'}
           </Button>
         </div>
       </div>
