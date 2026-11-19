@@ -99,6 +99,8 @@ Go to the Playlists page and create a new playlist. Set your filter criteria (ta
 Go to the New page and upload an audio file. Follow the guided steps: review extracted tags, edit if needed, upload an artist image if it's a new artist, and confirm the final file location. ReplayGain tags are generated automatically.
 
 ### Processing Lyrics
+
+AI lyrics instructions can be edited in **Settings → 提示詞管理** (`/settings?tab=prompts`), with draft previews, explicit saving, and default restoration. See [prompt management](docs/prompt-management.md) for storage, API, and maintenance details.
 In the tag editor, use the lyrics tool to clean up and format LRC lyrics. Requires an Anthropic API key in your `.env` file.
 
 ## Makefile Commands

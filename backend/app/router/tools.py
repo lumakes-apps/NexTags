@@ -19,7 +19,7 @@ async def pinyin_text(request: TextPressRequest):
     
 
 @router.post("/lyric", response_model=LyricPressResponse)
-async def lyric_tools(req: LyricPressRequest):
+def lyric_tools(req: LyricPressRequest):
     try:
         return LyricPressResponse(
             result=lrc_process(req.lyric)
