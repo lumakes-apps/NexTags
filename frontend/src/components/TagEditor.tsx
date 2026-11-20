@@ -3,6 +3,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import ArtistTagInput from '@/components/ArtistTagInput';
 import { useAutoSort } from '@/lib/useAutoSort';
 import MoveConfirmDialog from '@/components/MoveConfirmDialog';
+import { cleanLyricsWithAI, useIntegrationAvailable } from '@/lib/integrations';
 import { cancelPendingMove, fetchPendingMoves, previewMove, type MoveChoice, type MovePreview, type PendingMove } from '@/lib/songTags';
 import {
   chipsFromTags,
@@ -83,6 +84,9 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
   // 路徑會改變時等待使用者在確認視窗中選擇
   const [moveRequest, setMoveRequest] = useState<{ song: Song; preview: MovePreview & { proposal: NonNullable<MovePreview['proposal']> } } | null>(null);
   const [pendingMove, setPendingMove] = useState<PendingMove | null>(null);
+  const [lyricsError, setLyricsError] = useState<string | null>(null);
+  // 未啟用 AI 歌詞整合或未設定金鑰時不顯示整理按鈕
+  const aiLyricsAvailable = useIntegrationAvailable('ai_lyrics');
   const titleId = useId();
   // 排序標題由標題自動轉拼音，不手動編輯
   const titleSort = useAutoSort(editedSong?.Title ?? '', song?.Title ?? '', song?.SortTitle ?? '');
@@ -261,20 +265,11 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
     if (!editedSong?.Lyrics) return;
 
     setLoading(true);
+    setLyricsError(null);
     try {
-      const response = await fetch('/api/tools/lyric', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lyric: editedSong.Lyrics })
-      });
-
-      const data = await response.json();
-
-      if (response.ok && data.result) {
-        handleInputChange('Lyrics', data.result);
-      }
+      handleInputChange('Lyrics', await cleanLyricsWithAI(editedSong.Lyrics));
     } catch (error) {
-      console.error('Lyric processing failed:', error);
+      setLyricsError(error instanceof Error ? error.message : 'AI 整理歌詞失敗，請重試');
     } finally {
       setLoading(false);
     }
@@ -687,17 +682,21 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="text-gray-500">歌詞 (Lyrics)</label>
-                <Button
-                  variant="clear"
-                  size="sm"
-                  onClick={processLyrics}
-                  disabled={loading || !editedSong.Lyrics}
-                  className="text-xs rounded-full"
-                >
-                  <Sparkles className='size-4' />
-                  {loading ? '處理中...' : ''}
-                </Button>
+                {aiLyricsAvailable && (
+                  <Button
+                    variant="clear"
+                    size="sm"
+                    onClick={processLyrics}
+                    disabled={loading || !editedSong.Lyrics}
+                    className="text-xs rounded-full"
+                    aria-label="AI 整理歌詞"
+                  >
+                    <Sparkles className='size-4' />
+                    {loading ? '處理中...' : ''}
+                  </Button>
+                )}
               </div>
+              {lyricsError && <p role="alert" className="text-sm text-red-600 mt-1">{lyricsError}</p>}
               <textarea
                 value={editedSong.Lyrics || ''}
                 onChange={(e) => handleInputChange('Lyrics', e.target.value)}

@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useId } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import ArtistTagInput from '@/components/ArtistTagInput'
 import { useAutoSort } from '@/lib/useAutoSort'
+import { cleanLyricsWithAI, useIntegrationAvailable } from '@/lib/integrations'
 import {
     SORT_FIELD,
     chipsFromTags,
@@ -42,6 +43,9 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
     const [directoryReady, setDirectoryReady] = useState(false)
     const [saving, setSaving] = useState(false)
     const [saveError, setSaveError] = useState<string | null>(null)
+    const [lyricsError, setLyricsError] = useState<string | null>(null)
+    // 未啟用 AI 歌詞整合或未設定金鑰時不顯示整理按鈕
+    const aiLyricsAvailable = useIntegrationAvailable('ai_lyrics')
     const titleId = useId()
     // 排序標題由標題自動轉拼音，不手動編輯
     const titleSort = useAutoSort(String(tags.title || ''), String(initialTags?.title || ''), String(initialTags?.titlesort || ''))
@@ -115,20 +119,11 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
         if (!tags.lyrics) return
 
         setLoading(true)
+        setLyricsError(null)
         try {
-            const response = await fetch('/api/tools/lyric', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ lyric: tags.lyrics })
-            })
-
-            const data = await response.json()
-
-            if (response.ok && data.result) {
-                handleInputChange('lyrics', data.result)
-            }
+            handleInputChange('lyrics', await cleanLyricsWithAI(String(tags.lyrics)))
         } catch (error) {
-            console.error('Lyric processing failed:', error)
+            setLyricsError(error instanceof Error ? error.message : 'AI 整理歌詞失敗，請重試')
         } finally {
             setLoading(false)
         }
@@ -382,17 +377,21 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
             <div>
                 <div className="flex items-center justify-between mb-1">
                     <label className="block text-sm font-medium text-gray-700">歌詞</label>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={processLyrics}
-                        disabled={loading || !tags.lyrics}
-                        className="text-xs"
-                    >
-                        <Sparkles className='size-4' />
-                        {loading ? '處理中...' : ''}
-                    </Button>
+                    {aiLyricsAvailable && (
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={processLyrics}
+                            disabled={loading || !tags.lyrics}
+                            className="text-xs"
+                            aria-label="AI 整理歌詞"
+                        >
+                            <Sparkles className='size-4' />
+                            {loading ? '處理中...' : ''}
+                        </Button>
+                    )}
                 </div>
+                {lyricsError && <p role="alert" className="text-sm text-red-600">{lyricsError}</p>}
                 <textarea
                     value={String(tags.lyrics || '')}
                     onChange={(e) => handleInputChange('lyrics', e.target.value)}
