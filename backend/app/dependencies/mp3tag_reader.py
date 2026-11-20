@@ -205,6 +205,20 @@ def normalize_tag_keys(raw_tags: dict) -> dict:
                         normalized[standard_key] = str(raw_value) if raw_value else ''
                 break
     
+    # ID3 USLT 的鍵包含描述與語言，不能只辨識空描述的英文版本。
+    # 保留既有非空歌詞的優先順序，再以固定鍵序選取其他非空 USLT。
+    if not normalized.get('lyrics', '').strip():
+        for key in sorted(raw_tags):
+            if not key.startswith('USLT:'):
+                continue
+            raw_value = raw_tags[key]
+            text_value = getattr(raw_value, 'text', raw_value)
+            if isinstance(text_value, list):
+                text_value = ' '.join(str(t) for t in text_value if t)
+            if text_value and str(text_value).strip():
+                normalized['lyrics'] = str(text_value)
+                break
+
     return normalized
 
 
