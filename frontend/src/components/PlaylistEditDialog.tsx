@@ -374,7 +374,7 @@ export default function PlaylistEditDialog({
                                 <SelectValue placeholder="選擇排序方式" />
                             </SelectTrigger>
                             <SelectContent>
-                                <SelectItem value="creation_time">檔案建立時間 (File Creation Time)</SelectItem>
+                                <SelectItem value="creation_time">加入時間 (Date Added)</SelectItem>
                                 <SelectItem value="title">標題 (TitleSort)</SelectItem>
                             </SelectContent>
                         </Select>

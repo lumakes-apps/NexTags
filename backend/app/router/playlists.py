@@ -313,7 +313,7 @@ def sort_songs_by_creation_time(
     songs: List[str],
     metadata_cache: Optional[Dict[str, Dict[str, Any]]] = None
 ) -> List[str]:
-    """根據檔案建立時間排序（新→舊）"""
+    """根據加入時間排序（新→舊）；無 catalog 時退回檔案 mtime"""
     try:
         songs_with_time = []
         logger.info(f"開始排序 {len(songs)} 首歌曲")
@@ -322,7 +322,10 @@ def sort_songs_by_creation_time(
             try:
                 cached_record = metadata_cache.get(song) if metadata_cache else None
                 if cached_record and cached_record.get("modification_time") is not None:
-                    modification_time = float(cached_record.get("modification_time") or 0)
+                    # 優先用加入時間：編輯標籤會改 mtime，不能讓剛編輯的歌變成「最新」
+                    modification_time = float(
+                        cached_record.get("added_time") or cached_record.get("modification_time") or 0
+                    )
                     creation_time = modification_time
                 else:
                     # 獲取檔案時間戳
@@ -441,10 +444,10 @@ def get_favorites_display_name(favorites: Optional[bool]) -> str:
 def get_sort_method_display_name(sort_method: str) -> str:
     """獲取排序方式的顯示名稱"""
     sort_methods = {
-        "creation_time": "檔案建立時間",
+        "creation_time": "加入時間",
         "title": "標題 (TitleSort)"
     }
-    return sort_methods.get(sort_method, "檔案建立時間")
+    return sort_methods.get(sort_method, "加入時間")
 
 def enrich_playlist_data(playlist_data: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
     """豐富播放清單資料，加入顯示名稱"""
@@ -674,7 +677,7 @@ def _get_playlist_songs_impl(id: int, sort_by: str):
             sorted_songs = sort_songs_by_title(filtered_songs, tag_cache)
             sort_method_desc = "title"
         else:
-            # 預設使用檔案建立時間排序（新→舊）
+            # 預設使用加入時間排序（新→舊）
             sorted_songs = sort_songs_by_creation_time(filtered_songs, metadata_cache)
             sort_method_desc = "file_creation_time"
         
@@ -691,7 +694,9 @@ def _get_playlist_songs_impl(id: int, sort_by: str):
                 try:
                     cached_record = metadata_cache.get(file_path)
                     if cached_record and cached_record.get("modification_time") is not None:
-                        modification_time = float(cached_record.get("modification_time") or 0)
+                        modification_time = float(
+                            cached_record.get("added_time") or cached_record.get("modification_time") or 0
+                        )
                     else:
                         modification_time = os.stat(file_path).st_mtime
                     dt = datetime.fromtimestamp(modification_time)
@@ -810,7 +815,7 @@ def generate_m3u_content(
     if sort_method == 'title':
         sorted_songs = sort_songs_by_title(filtered_songs, tag_cache)
     else:
-        # 預設使用檔案建立時間排序（新→舊）
+        # 預設使用加入時間排序（新→舊）
         sorted_songs = sort_songs_by_creation_time(filtered_songs, metadata_cache)
 
     logger.info(f"找到 {len(sorted_songs)} 首歌曲，生成 M3U 檔案")

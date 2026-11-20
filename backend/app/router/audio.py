@@ -105,7 +105,8 @@ def _audio_details_from_tags(
     allow_folders: List[str],
     modification_time: Optional[float] = None,
     cover_path: Optional[str] = None,
-    main_folder: Optional[str] = None
+    main_folder: Optional[str] = None,
+    added_time: Optional[float] = None
 ) -> dict:
     if modification_time is None:
         modification_time = os.path.getmtime(file_path) if os.path.exists(file_path) else 0
@@ -154,7 +155,9 @@ def _audio_details_from_tags(
         "Comment": _tag_to_string(tags.get('comment', ''), 'comment'),
         "ReplayGainTrackGain": _tag_to_string(tags.get('replaygain_track_gain', ''), 'replaygain_track_gain'),
         "ReplayGainTrackPeak": _tag_to_string(tags.get('replaygain_track_peak', ''), 'replaygain_track_peak'),
-        "ModificationTime": modification_time
+        "ModificationTime": modification_time,
+        # 列表排序用：加入音樂庫的時間，不因編輯標籤而改變（無 catalog 時退回 mtime）
+        "AddedTime": added_time if added_time is not None else modification_time
     }
 
 def _catalog_record_to_audio_details(record: Dict[str, Any], allow_folders: List[str]) -> dict:
@@ -164,7 +167,8 @@ def _catalog_record_to_audio_details(record: Dict[str, Any], allow_folders: List
         allow_folders,
         modification_time=record.get("modification_time", 0),
         cover_path=record.get("cover_path", ""),
-        main_folder=record.get("main_folder")
+        main_folder=record.get("main_folder"),
+        added_time=record.get("added_time")
     )
 
 def _extract_audio_details_sync(file_path: str, allow_folders: List[str]) -> dict:
@@ -385,7 +389,7 @@ async def get_audios(
         has_filters = filterTitle or filterFolder or filterFavorite or filterLanguage
         need_details = details or has_filters
 
-        # 無任何 filter 時走 server-side 分頁（by_mtime ZSET），只讀該頁，
+        # 無任何 filter 時走 server-side 分頁（by_added ZSET），只讀該頁，
         # 不再每次翻頁都全量載入+轉換+排序整個 catalog。
         # 有 filter 或索引不可用時，落回下方既有全量路徑（資料不丟、僅較慢）。
         if redis_cache is not None and not has_filters:
@@ -451,7 +455,7 @@ async def get_audios(
             else:
                 filtered_info = all_detailed_info
 
-            filtered_info.sort(key=lambda x: x.get('ModificationTime', 0), reverse=True)
+            filtered_info.sort(key=lambda x: x.get('AddedTime', 0), reverse=True)
 
             page_size = 100
             total_count = len(filtered_info)
@@ -465,7 +469,7 @@ async def get_audios(
             audio_data = filtered_info[start_index:end_index]
 
         elif catalog_records:
-            catalog_records.sort(key=lambda x: x.get('modification_time', 0), reverse=True)
+            catalog_records.sort(key=lambda x: x.get('added_time') or x.get('modification_time', 0), reverse=True)
 
             page_size = 100
             total_count = len(catalog_records)

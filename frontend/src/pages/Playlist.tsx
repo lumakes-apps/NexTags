@@ -193,7 +193,7 @@ export default function PlaylistDetailPage() {
                             className="border-gray-300 text-gray-700 hover:bg-gray-100"
                         >
                             <ArrowUpDown className="w-4 h-4 mr-1" />
-                            {sortBy === 'creation_time' ? '檔案建立時間' : '標題'}
+                            {sortBy === 'creation_time' ? '加入時間' : '標題'}
                         </Button>
                     </div>
                     <Button

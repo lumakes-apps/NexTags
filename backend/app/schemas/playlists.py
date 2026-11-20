@@ -20,7 +20,7 @@ class SmartPlaylist(BaseModel):
     filter_language_display: List[str] = Field(default_factory=list, description="語言顯示名稱")
     exclude_language_display: List[str] = Field(default_factory=list, description="排除語言顯示名稱")
     filter_favorites_display: Optional[str] = Field(None, description="我的最愛顯示名稱")
-    sort_method_display: str = Field("檔案建立時間", description="排序方式顯示名稱")
+    sort_method_display: str = Field("加入時間", description="排序方式顯示名稱")
 
 class SmartPlaylistCreate(BaseModel):
     """創建智慧播放清單請求模型"""
