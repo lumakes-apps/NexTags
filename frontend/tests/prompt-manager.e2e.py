@@ -53,6 +53,9 @@ def api(route):
             result = {'result': '[00:01.12]測試整理結果'}
     elif path == '/api/config' and request.method == 'GET':
         result = {'success': True, 'data': config}
+    elif path == '/api/integrations' and request.method == 'GET':
+        # 設定頁的左側導覽會列出整合；本測試不涉及整合，回傳空清單
+        result = []
     else:
         raise AssertionError(f'Unexpected API request: {request.method} {path}')
     route.fulfill(status=status, content_type='application/json', body=json.dumps(result))
