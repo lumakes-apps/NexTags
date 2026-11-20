@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import { toast } from 'sonner';
 import { ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -74,12 +74,14 @@ export function IntegrationsOverview({ integrations, onOpen, onChanged }: {
 
 // ---------------- 欄位 ----------------
 
-function FieldInput({ field, value, secret, disabled, onChange }: {
+function FieldInput({ field, value, secret, disabled, onChange, trailing }: {
   field: IntegrationField;
   value: unknown;
-  secret: 'env' | 'database' | null | undefined;
+  secret: 'database' | null | undefined;
   disabled: boolean;
   onChange: (value: unknown) => void;
+  /** 放在輸入框右側的操作（例如清除已儲存的密鑰） */
+  trailing?: ReactNode;
 }) {
   const id = useId();
   const describedBy = field.help ? `${id}-help` : undefined;
@@ -110,20 +112,24 @@ function FieldInput({ field, value, secret, disabled, onChange }: {
       </div>
     );
   }
-  const secretHint = secret === 'env' ? '由環境變數提供' : secret === 'database' ? '已設定，留空則不變' : '尚未設定';
+  const secretHint = secret === 'database' ? '已設定，留空則不變' : '尚未設定';
   return (
     <div>
       <label htmlFor={id} className="text-sm text-gray-800 block mb-1">{field.label}</label>
-      <Input
-        id={id}
-        type={field.kind === 'secret' ? 'password' : field.kind === 'number' ? 'number' : 'text'}
-        autoComplete={field.kind === 'secret' ? 'new-password' : 'off'}
-        value={String(value ?? '')}
-        placeholder={field.kind === 'secret' ? secretHint : ''}
-        disabled={disabled || (field.kind === 'secret' && secret === 'env')}
-        onChange={event => onChange(field.kind === 'number' ? Number(event.target.value) : event.target.value)}
-        aria-describedby={describedBy}
-      />
+      <div className="flex gap-2">
+        <Input
+          id={id}
+          className="min-w-0 flex-1"
+          type={field.kind === 'secret' ? 'password' : field.kind === 'number' ? 'number' : 'text'}
+          autoComplete={field.kind === 'secret' ? 'new-password' : 'off'}
+          value={String(value ?? '')}
+          placeholder={field.kind === 'secret' ? secretHint : ''}
+          disabled={disabled}
+          onChange={event => onChange(field.kind === 'number' ? Number(event.target.value) : event.target.value)}
+          aria-describedby={describedBy}
+        />
+        {trailing}
+      </div>
       {help}
     </div>
   );
@@ -282,19 +288,19 @@ function FieldGroup({ integration, title, fields, onChanged, actions, afterField
                 setValues(prev => ({ ...prev, [field.name]: value }));
               }
             }}
+            trailing={field.kind === 'secret' && integration.secrets[field.name] === 'database' && (
+              <Button variant="outline" size="sm" className="shrink-0" disabled={disabled} aria-label={`清除${field.label}`}
+                onClick={() => save({ secrets: { [field.name]: null } }, `已清除${field.label}`)}>
+                清除
+              </Button>
+            )}
           />
-          {field.kind === 'secret' && integration.secrets[field.name] === 'database' && (
-            <Button variant="outline" size="sm" className="mt-2" disabled={disabled}
-              onClick={() => save({ secrets: { [field.name]: null } }, `已清除${field.label}`)}>
-              清除{field.label}
-            </Button>
-          )}
           {afterField?.[field.name] && <div className="mt-3">{afterField[field.name]}</div>}
         </div>
       ))}
       {fields.some(field => field.kind === 'secret') && !integration.master_key_configured && (
         <p role="alert" className="text-sm text-amber-700">
-          伺服器未設定 NEXTAGS_SECRET_KEY，無法儲存密鑰；請在 .env 設定後重新啟動，或改用環境變數提供。
+          伺服器未設定 NEXTAGS_SECRET_KEY，無法儲存密鑰；請在 .env 設定後重新啟動。
         </p>
       )}
       {(textFields.length > 0 || actions) && (
