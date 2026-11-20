@@ -46,8 +46,12 @@ class CoverPersistenceTests(unittest.TestCase):
 
     def make_audio(self, extension='flac'):
         target = self.root / f'song.{extension}'
+        # 不指定 codec 時，缺 libvorbis 的 ffmpeg（如 Homebrew）會把 .ogg 編成 Ogg FLAC；
+        # 改用內建 vorbis 編碼器（僅支援雙聲道）確保產生 Ogg Vorbis。
+        codec = ['-ac', '2', '-c:a', 'vorbis', '-strict', '-2'] if extension == 'ogg' else []
         subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=mono',
-                        '-t', '0.05', '-metadata', 'title=Original title', str(target)], check=True, capture_output=True)
+                        '-t', '0.05', *codec, '-metadata', 'title=Original title', str(target)],
+                       check=True, capture_output=True)
         return target
 
     def test_cover_replacement_persists_in_all_supported_formats(self):

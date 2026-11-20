@@ -60,67 +60,71 @@ def _assign_number_pair(normalized: dict, standard_key: str, value) -> None:
         normalized[standard_key] = text
 
 
+# 標準欄位 -> 各容器中可能出現的鍵名（讀取時依序取第一個存在的）。
+# 寫入端也依此清除別名，確保寫入後讀回的就是剛寫入的值。
+TAG_ALIASES = {
+    # Comment 相關
+    'comment': ['comment', 'COMM::eng', '\xa9cmt', 'COMMENT'],
+    # Lyrics 相關
+    'lyrics': ['lyrics', 'USLT::eng', '\xa9lyr', 'LYRICS', 'UNSYNCEDLYRICS'],
+    # 其他常用標籤
+    'title': ['title', 'TIT2', '\xa9nam', 'TITLE'],
+    'artist': ['artist', 'TPE1', '\xa9ART', 'ARTIST'],
+    'album': ['album', 'TALB', '\xa9alb', 'ALBUM'],
+    'albumartist': ['albumartist', 'TPE2', 'aART', 'ALBUMARTIST'],
+    'composer': ['composer', 'TCOM', '\xa9wrt', 'COMPOSER'],
+    'performer': ['performer', 'TPE3', '\xa9prf', 'PERFORMER'],
+    'titlesort': ['titlesort', 'TSOT', 'sonm', 'TITLESORT'],
+    'artistsort': ['artistsort', 'TSOP', 'soar', 'ARTISTSORT'],
+    'albumsort': ['albumsort', 'TSOA', 'soal', 'ALBUMSORT'],
+    'albumartistsort': ['albumartistsort', 'TSO2', 'soaa', 'ALBUMARTISTSORT', 'TXXX:ALBUMARTISTSORT'],
+    'composersort': ['composersort', 'TSOC', 'soco', 'COMPOSERSORT', 'TXXX:COMPOSERSORT'],
+    'performersort': ['performersort', 'TSOP3', 'sope', 'PERFORMERSORT', 'TXXX:PERFORMERSORT'],
+    'discnumber': ['discnumber', 'TPOS', 'disk', 'DISCNUMBER', 'DISC'],
+    # Vorbis comment 的 key 由 mutagen 回傳小寫，ID3/MP4 則是原樣，因此兩種大小寫都要列
+    'disctotal': ['disctotal', 'DISCTOTAL', 'totaldiscs', 'TOTALDISCS'],
+    'tracknumber': ['tracknumber', 'TRCK', 'trkn', 'TRACKNUMBER', 'TRACK'],
+    'tracktotal': ['tracktotal', 'TRACKTOTAL', 'totaltracks', 'TOTALTRACKS'],
+    'genre': ['genre', 'TCON', '\xa9gen', 'GENRE'],
+    'language': ['language', 'TLAN', 'LANGUAGE', 'TXXX:LANGUAGE', '----:com.apple.iTunes:LANGUAGE'],
+    'favorite': ['favorite', 'FAVORITE', 'Favorite', 'TXXX:FAVORITE', 'TXXX:Favorite', '----:com.apple.iTunes:FAVORITE'],
+    # ReplayGain 相關標籤
+    'replaygain_track_gain': [
+        'replaygain_track_gain',  # FLAC/Vorbis (小寫)
+        'REPLAYGAIN_TRACK_GAIN',  # FLAC/Vorbis (大寫)
+        'TXXX:REPLAYGAIN_TRACK_GAIN',  # MP3 (ID3v2) - 大寫
+        'TXXX:replaygain_track_gain',  # MP3 (ID3v2) - 小寫
+        '----:com.apple.iTunes:replaygain_track_gain',  # MP4
+    ],
+    'replaygain_track_peak': [
+        'replaygain_track_peak',  # FLAC/Vorbis (小寫)
+        'REPLAYGAIN_TRACK_PEAK',  # FLAC/Vorbis (大寫)
+        'TXXX:REPLAYGAIN_TRACK_PEAK',  # MP3 (ID3v2) - 大寫
+        'TXXX:replaygain_track_peak',  # MP3 (ID3v2) - 小寫
+        '----:com.apple.iTunes:replaygain_track_peak',  # MP4
+    ],
+    'replaygain_album_gain': [
+        'replaygain_album_gain',  # FLAC/Vorbis (小寫)
+        'REPLAYGAIN_ALBUM_GAIN',  # FLAC/Vorbis (大寫)
+        'TXXX:REPLAYGAIN_ALBUM_GAIN',  # MP3 (ID3v2) - 大寫
+        'TXXX:replaygain_album_gain',  # MP3 (ID3v2) - 小寫
+        '----:com.apple.iTunes:replaygain_album_gain',  # MP4
+    ],
+    'replaygain_album_peak': [
+        'replaygain_album_peak',  # FLAC/Vorbis (小寫)
+        'REPLAYGAIN_ALBUM_PEAK',  # FLAC/Vorbis (大寫)
+        'TXXX:REPLAYGAIN_ALBUM_PEAK',  # MP3 (ID3v2) - 大寫
+        'TXXX:replaygain_album_peak',  # MP3 (ID3v2) - 小寫
+        '----:com.apple.iTunes:replaygain_album_peak',  # MP4
+    ],
+}
+
+
 def normalize_tag_keys(raw_tags: dict) -> dict:
     """標準化標籤鍵名，將不同格式的標籤統一為標準名稱"""
     normalized = {}
     
-    # 標籤映射表，將不同格式的標籤鍵名統一
-    tag_mappings = {
-        # Comment 相關
-        'comment': ['comment', 'COMM::eng', '\xa9cmt', 'COMMENT'],
-        # Lyrics 相關
-        'lyrics': ['lyrics', 'USLT::eng', '\xa9lyr', 'LYRICS', 'UNSYNCEDLYRICS'],
-        # 其他常用標籤
-        'title': ['title', 'TIT2', '\xa9nam', 'TITLE'],
-        'artist': ['artist', 'TPE1', '\xa9ART', 'ARTIST'],
-        'album': ['album', 'TALB', '\xa9alb', 'ALBUM'],
-        'albumartist': ['albumartist', 'TPE2', 'aART', 'ALBUMARTIST'],
-        'composer': ['composer', 'TCOM', '\xa9wrt', 'COMPOSER'],
-        'performer': ['performer', 'TPE3', '\xa9prf', 'PERFORMER'],
-        'titlesort': ['titlesort', 'TSOT', 'sonm', 'TITLESORT'],
-        'artistsort': ['artistsort', 'TSOP', 'soar', 'ARTISTSORT'],
-        'albumsort': ['albumsort', 'TSOA', 'soal', 'ALBUMSORT'],
-        'albumartistsort': ['albumartistsort', 'TSO2', 'soaa', 'ALBUMARTISTSORT', 'TXXX:ALBUMARTISTSORT'],
-        'composersort': ['composersort', 'TSOC', 'soco', 'COMPOSERSORT', 'TXXX:COMPOSERSORT'],
-        'performersort': ['performersort', 'TSOP3', 'sope', 'PERFORMERSORT', 'TXXX:PERFORMERSORT'],
-        'discnumber': ['discnumber', 'TPOS', 'disk', 'DISCNUMBER', 'DISC'],
-        # Vorbis comment 的 key 由 mutagen 回傳小寫，ID3/MP4 則是原樣，因此兩種大小寫都要列
-        'disctotal': ['disctotal', 'DISCTOTAL', 'totaldiscs', 'TOTALDISCS'],
-        'tracknumber': ['tracknumber', 'TRCK', 'trkn', 'TRACKNUMBER', 'TRACK'],
-        'tracktotal': ['tracktotal', 'TRACKTOTAL', 'totaltracks', 'TOTALTRACKS'],
-        'genre': ['genre', 'TCON', '\xa9gen', 'GENRE'],
-        'language': ['language', 'TLAN', 'LANGUAGE', 'TXXX:LANGUAGE', '----:com.apple.iTunes:LANGUAGE'],
-        'favorite': ['favorite', 'FAVORITE', 'Favorite', 'TXXX:FAVORITE', 'TXXX:Favorite', '----:com.apple.iTunes:FAVORITE'],
-        # ReplayGain 相關標籤
-        'replaygain_track_gain': [
-            'replaygain_track_gain',  # FLAC/Vorbis (小寫)
-            'REPLAYGAIN_TRACK_GAIN',  # FLAC/Vorbis (大寫)
-            'TXXX:REPLAYGAIN_TRACK_GAIN',  # MP3 (ID3v2) - 大寫
-            'TXXX:replaygain_track_gain',  # MP3 (ID3v2) - 小寫
-            '----:com.apple.iTunes:replaygain_track_gain',  # MP4
-        ],
-        'replaygain_track_peak': [
-            'replaygain_track_peak',  # FLAC/Vorbis (小寫)
-            'REPLAYGAIN_TRACK_PEAK',  # FLAC/Vorbis (大寫)
-            'TXXX:REPLAYGAIN_TRACK_PEAK',  # MP3 (ID3v2) - 大寫
-            'TXXX:replaygain_track_peak',  # MP3 (ID3v2) - 小寫
-            '----:com.apple.iTunes:replaygain_track_peak',  # MP4
-        ],
-        'replaygain_album_gain': [
-            'replaygain_album_gain',  # FLAC/Vorbis (小寫)
-            'REPLAYGAIN_ALBUM_GAIN',  # FLAC/Vorbis (大寫)
-            'TXXX:REPLAYGAIN_ALBUM_GAIN',  # MP3 (ID3v2) - 大寫
-            'TXXX:replaygain_album_gain',  # MP3 (ID3v2) - 小寫
-            '----:com.apple.iTunes:replaygain_album_gain',  # MP4
-        ],
-        'replaygain_album_peak': [
-            'replaygain_album_peak',  # FLAC/Vorbis (小寫)
-            'REPLAYGAIN_ALBUM_PEAK',  # FLAC/Vorbis (大寫)
-            'TXXX:REPLAYGAIN_ALBUM_PEAK',  # MP3 (ID3v2) - 大寫
-            'TXXX:replaygain_album_peak',  # MP3 (ID3v2) - 小寫
-            '----:com.apple.iTunes:replaygain_album_peak',  # MP4
-        ],
-    }
+    tag_mappings = TAG_ALIASES
     
     # 直接複製所有原始標籤
     for key, value in raw_tags.items():

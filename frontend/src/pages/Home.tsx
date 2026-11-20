@@ -233,13 +233,9 @@ export default function Home() {
           language: song.Language,
           favorite: song.Favorite,
           lyrics: song.Lyrics || '',
-          comment: song.Comment || '',
-          jfid: song.JfId || '',
-          jellyfin_add_time: song.JellyfinAddTime || '',
-          replaygain_track_gain: song.ReplayGainTrackGain || '',
-          replaygain_track_peak: song.ReplayGainTrackPeak || '',
-          replaygain_album_gain: song.ReplayGainAlbumGain || '',
-          replaygain_album_peak: song.ReplayGainAlbumPeak || ''
+          comment: song.Comment || ''
+          // 只送編輯器可修改的欄位：後端把空值視為刪除，
+          // ReplayGain 由後端計算寫入、列表 API 也不回傳 album gain，不能由這裡覆寫。
         }]
       });
 
