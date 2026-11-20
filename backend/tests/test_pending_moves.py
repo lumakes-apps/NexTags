@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from app import integrations
 from app.services import pending_moves
 
 
@@ -48,10 +49,12 @@ class PendingMoveTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.status_file = self.root / 'status' / 'status.json'
         self.refreshes = []
+        self.wait = True
         for patcher in (
             patch.object(pending_moves, 'redis_cache', self.cache),
-            patch.object(pending_moves, 'STATUS_FILE', str(self.status_file)),
-            patch.object(pending_moves, 'request_navidrome_refresh', lambda reason, payload=None: self.refreshes.append(reason)),
+            patch('app.integrations.navidrome_integration.STATUS_FILE', str(self.status_file)),
+            patch.object(integrations.navidrome, 'wait_for_scan', lambda: self.wait),
+            patch('app.integrations.emit_event', lambda event, payload=None: self.refreshes.append(event)),
             patch('app.router.playlists.regenerate_all_m3u', lambda: True),
         ):
             patcher.start()
@@ -88,6 +91,13 @@ class PendingMoveTests(unittest.TestCase):
         self.assertFalse(self.source.exists())
         self.assertEqual(pending_moves.list_moves(), [])
         self.assertEqual(self.refreshes[-1], 'pending_moves_done')
+        self.assertIn('file_moved', self.refreshes)
+
+    def test_moves_immediately_when_not_waiting_for_navidrome(self):
+        self.wait = False  # 未啟用 Navidrome 整合或關閉等待：沒有 hook 也不會一直卡在待移動
+        pending_moves.queue_move(str(self.source), str(self.target))
+        self.assertEqual(pending_moves.process_pending_moves(), 1)
+        self.assertTrue(self.target.exists())
 
     def test_move_keeps_added_time_and_carries_leftovers(self):
         pending_moves.perform_move(str(self.source), str(self.target))

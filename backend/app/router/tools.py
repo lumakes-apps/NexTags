@@ -24,5 +24,7 @@ def lyric_tools(req: LyricPressRequest):
         return LyricPressResponse(
             result=lrc_process(req.lyric)
         )
+    except ValueError as e:  # AI 歌詞整合未啟用或未設定金鑰
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"轉換歌詞發生錯誤: {str(e)}")

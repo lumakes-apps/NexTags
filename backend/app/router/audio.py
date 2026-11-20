@@ -8,7 +8,7 @@ from app.dependencies.mp3tag_writer import write_tags
 from app.dependencies.redis_cache import redis_cache
 from app.dependencies.utils.replaygain import generate_replaygain
 from app.dependencies.utils.cover_art import decode_cover_data, write_audio_cover
-from app.dependencies.navidrome_hook import request_navidrome_refresh
+from app.integrations import emit_event
 from pathlib import Path
 from app.router.config import get_config
 from app.services.shared_state import RedisDoc
@@ -603,7 +603,8 @@ def _write_tags_and_refresh_sync(path: str, merged_tags: dict, cover_data: Optio
                 if sibling != path and Path(sibling).parent == Path(path).parent:
                     redis_cache.upsert_audio_record(sibling, record['tags'])
     if cover:
-        request_navidrome_refresh('audio_cover_update', {'file_path': path, 'cover_path': cover_path})
+        emit_event('audio_cover_update', {'file_path': path, 'cover_path': cover_path})
+    emit_event('tags_saved', {'file_path': path})
     return cover_path
 
 def _move_proposal_sync(path: str, new_tags: dict, filename: Optional[str] = None) -> Optional[dict]:

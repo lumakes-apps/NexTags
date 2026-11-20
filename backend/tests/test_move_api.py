@@ -39,7 +39,7 @@ class MoveApiTests(unittest.TestCase):
             patch.object(audio, 'MUSIC_ROOT', self.root),
             patch.object(path_rules, 'MUSIC_ROOT', str(self.root)),
             patch.object(audio, 'redis_cache', Mock()),
-            patch.object(audio, 'request_navidrome_refresh', create=True),
+            patch.object(audio, 'emit_event'),
             patch.object(audio.pending_moves, 'redis_cache', Mock()),
             patch.object(audio.pending_moves, 'get_move', return_value=None),
             patch.object(audio.pending_moves, 'queue_move',

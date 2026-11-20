@@ -1,5 +1,7 @@
 """編輯標籤後的檔案移動：先寫標籤、等 Navidrome 掃描過，再搬檔案。
 
+未啟用 Navidrome 整合（或關閉「移動前等待掃描」）時，排入後立即搬移。
+
 Navidrome 以「專輯 + 碟片 + 曲目編號 + 標題」識別歌曲，不含路徑。若標籤改變與檔案搬移
 落在同一次掃描，Navidrome 會把它當成刪除再新增，播放次數、喜愛與評分就會遺失。
 因此標籤寫入後先排隊，等主機上的 refresh hook 回報「涵蓋這次寫入的掃描已完成」才搬移；
@@ -12,12 +14,9 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.dependencies.logger import logger
-from app.dependencies.navidrome_hook import request_navidrome_refresh
 from app.dependencies.redis_cache import redis_cache
 
 PENDING_MOVES_HASH = 'pending_moves'
-# 主機 hook 在掃描結束時寫入；必須與觸發用的 navidrome_refresh/ 分開，否則寫入會再次觸發掃描
-STATUS_FILE = os.getenv('NAVIDROME_HOOK_STATUS_FILE', '/app/data/navidrome_status/status.json')
 AUDIO_EXTENSIONS = {'.flac', '.mp3', '.wav', '.m4a', '.aac', '.ogg', '.wma'}
 
 
@@ -43,7 +42,8 @@ def queue_move(source: str, target: str) -> Dict[str, Any]:
     """排入一筆移動；同一首歌重複排入時以新的目標取代，並重新等待一次掃描。"""
     entry = {'source': source, 'target': target, 'created_at': _now(), 'status': 'pending', 'error': None}
     _client().hset(PENDING_MOVES_HASH, source, json.dumps(entry, ensure_ascii=False))
-    request_navidrome_refresh('pending_move', {'source': source, 'target': target})
+    from app.integrations import emit_event
+    emit_event('pending_move', {'source': source, 'target': target})
     return entry
 
 
@@ -58,14 +58,6 @@ def get_move(source: str) -> Optional[Dict[str, Any]]:
 
 def list_moves() -> List[Dict[str, Any]]:
     return [json.loads(value) for value in _client().hvals(PENDING_MOVES_HASH)]
-
-
-def read_scan_status() -> Optional[Dict[str, Any]]:
-    try:
-        with open(STATUS_FILE, encoding='utf-8') as handle:
-            return json.load(handle)
-    except (OSError, ValueError):
-        return None
 
 
 def scan_covers(entry: Dict[str, Any], status: Optional[Dict[str, Any]]) -> bool:
@@ -128,16 +120,20 @@ def perform_move(source: str, target: str) -> None:
     ):
         _carry_leftovers(old_artist_dir, new_artist_dir)
     logger.info(f'已移動檔案: {source} -> {target}')
+    from app.integrations import emit_event
+    emit_event('file_moved', {'source': source, 'target': target})
 
 
 def process_pending_moves() -> int:
     """執行所有已等到 Navidrome 掃描的移動；回傳成功移動的數量。"""
     if redis_cache is None:
         return 0
-    status = read_scan_status()
+    from app.integrations import navidrome
+    wait = navidrome.wait_for_scan()
+    status = navidrome.scan_status() if wait else None
     moved = 0
     for entry in list_moves():
-        if entry.get('status') != 'pending' or not scan_covers(entry, status):
+        if entry.get('status') != 'pending' or (wait and not scan_covers(entry, status)):
             continue
         source, target = entry['source'], entry['target']
         try:
@@ -156,7 +152,8 @@ def process_pending_moves() -> int:
             regenerate_all_m3u()
         except Exception as error:
             logger.error(f'移動後重新產生 M3U 失敗: {error}')
-        request_navidrome_refresh('pending_moves_done', {'moved': moved})
+        from app.integrations import emit_event
+        emit_event('pending_moves_done', {'moved': moved})
     return moved
 
 

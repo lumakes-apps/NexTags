@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -166,7 +166,9 @@ class LyricsPromptTests(unittest.TestCase):
 
     def test_truncated_response_is_not_applied(self):
         message = SimpleNamespace(stop_reason="max_tokens", content=[SimpleNamespace(text="不完整歌詞")])
-        with patch.object(lrc_process.client.messages, "create", return_value=message):
+        anthropic = Mock()
+        anthropic.return_value.messages.create.return_value = message
+        with patch.object(lrc_process, "Anthropic", anthropic), patch.dict(os.environ, {"ANTHROPIC_TOKEN": "test-key"}):
             response = self.client.post("/api/tools/lyric", json={"lyric": "原歌詞"})
         self.assertEqual(response.status_code, 500)
         self.assertNotIn("result", response.json())
