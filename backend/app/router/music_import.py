@@ -585,6 +585,24 @@ def _convert_audio_file_impl(request: ConvertFileRequest):
             import_sessions[request.file_id]['errors'].append(f"轉換失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"檔案轉換失敗: {str(e)}")
 
+def _is_json_value(value: Any) -> bool:
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return True
+    if isinstance(value, (list, tuple)):
+        return all(_is_json_value(item) for item in value)
+    return False
+
+
+def read_import_tags(file_path: str) -> Dict[str, Any]:
+    """讀取標籤供匯入流程回傳給前端：只保留可轉成 JSON 的值。
+
+    MP3 的讀取結果會連同 mutagen 的原始 ID3 物件（如 TIT2、APIC）一起回傳，
+    這些物件無法序列化，直接回傳會讓 API 以 500 失敗；它們的內容都已整理成
+    標準欄位，因此直接略過。
+    """
+    return {key: value for key, value in read_audio_tags(file_path).items() if _is_json_value(value)}
+
+
 def generate_suggested_filename(tags: Dict[str, Any], audio_format: str) -> str:
     """依目前的標籤產生檔名，空值使用可辨識的預設名稱。"""
     track_num = (coerce_number(tags.get('tracknumber')) or '1').zfill(2)
@@ -615,7 +633,7 @@ def _extract_music_tags_impl(request: ExtractTagsRequest):
             raise HTTPException(status_code=404, detail="暫存檔案不存在")
 
         # 讀取標籤
-        tags = read_audio_tags(temp_path)
+        tags = read_import_tags(temp_path)
 
         if not tags:
             raise HTTPException(status_code=500, detail="無法讀取檔案標籤")
@@ -627,7 +645,7 @@ def _extract_music_tags_impl(request: ExtractTagsRequest):
             if success:
                 logger.info(f"ReplayGain 生成成功: {message}")
                 # 重新讀取標籤以獲取 ReplayGain 值
-                tags = read_audio_tags(temp_path)
+                tags = read_import_tags(temp_path)
                 import_sessions[request.file_id]['replaygain_applied'] = True
             else:
                 logger.warning(f"ReplayGain 生成失敗（非致命錯誤）: {message}")
@@ -689,7 +707,7 @@ def _update_music_tags_impl(request: UpdateTagsRequest):
         if not success:
             raise HTTPException(status_code=500, detail="標籤更新失敗")
 
-        tags = read_audio_tags(temp_path)
+        tags = read_import_tags(temp_path)
         if not tags:
             raise HTTPException(status_code=500, detail="無法讀取更新後的檔案標籤")
         

@@ -20,6 +20,10 @@ async function openImport(page: Page, needsArtistImage = false) {
             response = {}
         } else if (endpoint === 'tags/tags') {
             response = []
+        } else if (endpoint === 'tags/artists') {
+            response = []
+        } else if (endpoint === 'tools/pinyin') {
+            response = { result: route.request().postDataJSON().text }
         } else if (endpoint === 'music-import/upload') {
             response = session
         } else if (endpoint === 'music-import/extract-tags') {
