@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh Navidrome after NexTags import or playlist update
+After=docker.service rclone-googletu.service
+Requires=docker.service rclone-googletu.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/nextags-navidrome-refresh-hook.sh

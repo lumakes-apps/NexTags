@@ -66,6 +66,10 @@ async def startup_event():
     import asyncio
     asyncio.create_task(task_manager.start_worker())
     logger.info("背景任務工作器已啟動")
+
+    # 編輯標籤後等待 Navidrome 掃描再搬移檔案
+    from app.services.pending_moves import run_worker as run_pending_move_worker
+    asyncio.create_task(run_pending_move_worker())
     
     logger.info("伺服器已準備就緒，等待請求...")
 

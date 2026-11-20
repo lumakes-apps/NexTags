@@ -10,6 +10,7 @@ import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { isAxiosError } from 'axios';
 import { useGenerateAllM3U } from '@/hooks/useGenerateAllM3U';
+import { fetchPendingMoves, songToTags, type MoveChoice } from '@/lib/songTags';
 
 interface Song {
   Title: string;
@@ -63,9 +64,11 @@ interface ApiResponse {
 interface SongRowProps {
   song: Song;
   onEdit: (song: Song) => void;
+  /** 排隊中的檔案移動：pending 等待 Navidrome 掃描、failed 移動失敗 */
+  moveStatus?: 'pending' | 'failed';
 }
 
-const SongRow = memo(function SongRow({ song, onEdit }: SongRowProps) {
+const SongRow = memo(function SongRow({ song, onEdit, moveStatus }: SongRowProps) {
   return (
     <tr className="hover:bg-gray-50">
       <td className="px-4 py-3 max-w-[200px] min-w-[100px]">
@@ -101,6 +104,14 @@ const SongRow = memo(function SongRow({ song, onEdit }: SongRowProps) {
         <div className="text-sm text-muted-foreground truncate">
           {song.FilePath || '未知路徑'}
         </div>
+        {moveStatus && (
+          <span
+            data-testid="move-badge"
+            className={`inline-block mt-1 px-2 py-0.5 text-xs rounded-full ${moveStatus === 'failed' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800'}`}
+          >
+            {moveStatus === 'failed' ? '移動失敗' : '待移動'}
+          </span>
+        )}
       </td>
       <td className="px-4 py-3 max-w-[320px] min-w-[200px]">
         <div className="text-sm flex flex-wrap gap-2 w-full">
@@ -157,6 +168,7 @@ export default function Home() {
     total_count: 0
   });
   const [editingSong, setEditingSong] = useState<Song | null>(null);
+  const [moveStatuses, setMoveStatuses] = useState<Record<string, 'pending' | 'failed'>>({});
 
   // 使用批量生成 M3U 的 hook
   const { generatingAll, handleGenerateAllM3U } = useGenerateAllM3U();
@@ -177,6 +189,10 @@ export default function Home() {
       const data: ApiResponse = await api.get('audios', params);
 
       setSongs(data.audio_files);
+      // 待移動標記只是輔助資訊，載入失敗不影響列表
+      fetchPendingMoves()
+        .then(moves => setMoveStatuses(Object.fromEntries(moves.map(move => [move.source, move.status]))))
+        .catch(error => console.error('Failed to load pending moves:', error));
       setAllowFolders(data.allow_folders);
       setSupportedLanguages(data.supported_languages || {});
 
@@ -207,36 +223,14 @@ export default function Home() {
     fetchSongs(page);
   };
 
-  const handleSaveTags = async (song: Song) => {
+  const handleSaveTags = async (song: Song, move?: MoveChoice) => {
     try {
       const result = await api.put('audios/update', {
         path: song.FilePath,
         cover_data: song.Cover.startsWith('data:') ? song.Cover : undefined,
-        tags: [{
-          title: song.Title,
-          artist: song.Artist,
-          album: song.Album,
-          albumartist: song.AlbumArtist || '',
-          composer: song.Composer || '',
-          performer: song.Performer || '',
-          titlesort: song.SortTitle,
-          artistsort: song.SortArtist,
-          albumsort: song.SortAlbum,
-          albumartistsort: song.SortAlbumArtist || '',
-          composersort: song.SortComposer || '',
-          performersort: song.SortPerformer || '',
-          tracknumber: song.TrackNumber || '',
-          tracktotal: song.TrackTotal || '',
-          discnumber: song.DiscNumber || '',
-          disctotal: song.DiscTotal || '',
-          genre: song.Genre,
-          language: song.Language,
-          favorite: song.Favorite,
-          lyrics: song.Lyrics || '',
-          comment: song.Comment || ''
-          // 只送編輯器可修改的欄位：後端把空值視為刪除，
-          // ReplayGain 由後端計算寫入、列表 API 也不回傳 album gain，不能由這裡覆寫。
-        }]
+        tags: [songToTags(song)],
+        move: move?.move ?? false,
+        move_filename: move?.filename,
       });
 
       if (!result.success) throw new Error(result.message || '儲存失敗，請重試');
@@ -396,7 +390,7 @@ export default function Home() {
                 </thead>
                 <tbody className="divide-y divide-gray-200">
                   {songs.map((song) => (
-                    <SongRow key={song.FilePath} song={song} onEdit={setEditingSong} />
+                    <SongRow key={song.FilePath} song={song} onEdit={setEditingSong} moveStatus={moveStatuses[song.FilePath]} />
                   ))}
                 </tbody>
               </table>

@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from app.schemas.audios import AudioTagsRequest, AudioTagsResponse, AudioUpdateRequest, AudioUpdateResponse
+from app.schemas.audios import AudioTagsRequest, AudioTagsResponse, AudioUpdateRequest, AudioUpdateResponse, MovePreviewRequest
+from app.dependencies.path_rules import propose_path
+from app.services import pending_moves
 from app.dependencies.mp3tag_reader import read_audio_tags
 from app.dependencies.mp3tag_writer import write_tags
 from app.dependencies.redis_cache import redis_cache
@@ -604,6 +606,64 @@ def _write_tags_and_refresh_sync(path: str, merged_tags: dict, cover_data: Optio
         request_navidrome_refresh('audio_cover_update', {'file_path': path, 'cover_path': cover_path})
     return cover_path
 
+def _move_proposal_sync(path: str, new_tags: dict, filename: Optional[str] = None) -> Optional[dict]:
+    """以檔案目前的標籤為「修改前」，計算這次修改對應的新路徑。"""
+    return propose_path(path, read_audio_tags(path), new_tags, filename)
+
+
+def _audio_files_in(folder: str) -> List[str]:
+    audio_extensions = {'.flac', '.mp3', '.wav', '.m4a', '.aac', '.ogg', '.wma'}
+    try:
+        return [name for name in os.listdir(folder) if os.path.splitext(name)[1].lower() in audio_extensions]
+    except OSError:
+        return []
+
+
+def _move_preview_sync(path: str, new_tags: dict, filename: Optional[str]) -> dict:
+    proposal = _move_proposal_sync(path, new_tags, filename)
+    if not proposal or proposal['proposed'] == path:
+        return {'proposal': None, 'pending': pending_moves.get_move(path) if pending_moves.redis_cache else None}
+    folder = os.path.dirname(path)
+    return {
+        'proposal': proposal,
+        'conflict': os.path.exists(proposal['proposed']),
+        # 原資料夾中除了這首以外還有幾首音檔（改專輯時只搬這一首，提醒使用者）
+        'others_in_folder': len([name for name in _audio_files_in(folder) if name != os.path.basename(path)]),
+        'pending': pending_moves.get_move(path) if pending_moves.redis_cache else None,
+    }
+
+
+@router.post("/move-preview")
+async def preview_audio_move(request: MovePreviewRequest):
+    """依這次的標籤修改，預覽檔案應移動到的新路徑（不做任何變更）"""
+    if not Path(request.path).resolve().is_relative_to(MUSIC_ROOT.resolve()):
+        raise HTTPException(status_code=400, detail="音檔必須位於音樂資料夾內")
+    if not os.path.isfile(request.path):
+        raise HTTPException(status_code=404, detail="檔案不存在")
+    merged_tags = {}
+    for tag_dict in request.tags:
+        merged_tags.update(tag_dict)
+    return await asyncio.get_event_loop().run_in_executor(
+        None, _move_preview_sync, request.path, merged_tags, request.filename
+    )
+
+
+@router.get("/pending-moves")
+async def list_pending_moves():
+    """排隊中（等待 Navidrome 掃描）或失敗的檔案移動"""
+    if redis_cache is None:
+        return []
+    return await asyncio.get_event_loop().run_in_executor(None, pending_moves.list_moves)
+
+
+@router.delete("/pending-moves")
+async def cancel_pending_move(path: str = Query(..., description="原檔案路徑")):
+    """取消一筆尚未執行的檔案移動（標籤已寫入，不會還原）"""
+    if redis_cache is None or not pending_moves.cancel_move(path):
+        raise HTTPException(status_code=404, detail="找不到這筆待移動的檔案")
+    return {"success": True}
+
+
 @router.put("/update", response_model=AudioUpdateResponse)
 async def update_audio_tags(request: AudioUpdateRequest):
     """更新音訊檔案的標籤"""
@@ -621,18 +681,38 @@ async def update_audio_tags(request: AudioUpdateRequest):
         for tag_dict in request.tags:
             merged_tags.update(tag_dict)
 
+        loop = asyncio.get_event_loop()
+        # 移動目標要用寫入前的標籤計算（比對這次改了哪些欄位），且在寫入前先擋下衝突
+        proposal = None
+        if request.move:
+            proposal = await loop.run_in_executor(
+                None, _move_proposal_sync, request.path, merged_tags, request.move_filename
+            )
+            if proposal and os.path.exists(proposal['proposed']):
+                raise HTTPException(status_code=409, detail=f"目標位置已有檔案：{proposal['proposed']}")
+
         # 寫標籤 + 刷新 catalog 都是阻塞 I/O（mutagen 寫檔、遠端掛載 stat、Redis），
         # 丟到執行緒池，避免卡住 event loop 影響其他請求。
-        loop = asyncio.get_event_loop()
         cover_path = await loop.run_in_executor(
             None, _write_tags_and_refresh_sync, request.path, merged_tags, request.cover_data
         )
 
+        pending = None
+        if proposal and proposal['proposed'] != request.path:
+            # 先寫標籤、等 Navidrome 掃描過再搬，播放紀錄才不會遺失
+            pending = await loop.run_in_executor(
+                None, pending_moves.queue_move, request.path, proposal['proposed']
+            )
+
+        message = "標籤與封面已儲存" if request.cover_data is not None else "標籤已儲存"
+        if pending:
+            message += "，檔案會在 Navidrome 掃描後移動"
         return AudioUpdateResponse(
             success=True,
-            message="標籤與封面已儲存" if request.cover_data is not None else "標籤已儲存",
+            message=message,
             updated_tags=merged_tags,
-            cover_path=cover_path
+            cover_path=cover_path,
+            pending_move=pending
         )
         
     except HTTPException:

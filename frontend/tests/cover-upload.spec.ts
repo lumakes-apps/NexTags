@@ -25,8 +25,10 @@ async function openEditor(page: Page, existingCover = '') {
             response = { chi: '中文' }
         } else if (endpoint === 'tags/tags') {
             response = []
-        } else if (endpoint === 'tags/artists') {
+        } else if (endpoint === 'tags/artists' || endpoint === 'audios/pending-moves') {
             response = []
+        } else if (endpoint === 'audios/move-preview') {
+            response = { proposal: null }
         } else if (endpoint === 'tools/pinyin') {
             response = { result: route.request().postDataJSON().text }
         } else if (endpoint === 'audios/update') {
@@ -60,6 +62,7 @@ test('cover stays pending until the save completes and remains after reopening',
     await page.getByRole('button', { name: '保存變更' }).click()
     await expect(page.getByRole('button', { name: '儲存中...' })).toBeDisabled()
     await expect(page.getByText('標籤與封面已儲存', { exact: true })).toHaveCount(0)
+    await expect.poll(() => saves.length).toBe(1) // 存檔前會先預覽是否需要移動檔案
     expect(saves[0].cover_data).toBe(`data:image/png;base64,${imageBytes.toString('base64')}`)
     control.release?.()
     await expect(page.getByText('標籤與封面已儲存', { exact: true })).toBeVisible()

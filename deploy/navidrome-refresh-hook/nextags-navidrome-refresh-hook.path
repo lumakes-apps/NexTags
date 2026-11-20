@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch NexTags Navidrome refresh hook requests
+
+[Path]
+PathChanged=/var/lib/docker/volumes/nextags_app-data/_data/navidrome_refresh
+Unit=nextags-navidrome-refresh-hook.service
+
+[Install]
+WantedBy=multi-user.target

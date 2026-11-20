@@ -1245,6 +1245,26 @@ def _perform_batch_m3u_generation():
         _batch_m3u_doc.set(status)
 
 
+def regenerate_all_m3u() -> bool:
+    """同步重新產生所有播放清單的 M3U（供背景工作使用，例如檔案移動後）。
+
+    已有批量任務在執行時略過並回傳 False，由執行中的任務產生最新結果。
+    """
+    if _batch_m3u_doc.get()["status"] == "running":
+        return False
+    _batch_m3u_doc.set({
+        "status": "running",
+        "progress": 0,
+        "total": 0,
+        "message": "正在初始化批量生成任務...",
+        "result": None,
+        "started_at": datetime.now().isoformat(),
+        "completed_at": None
+    })
+    _perform_batch_m3u_generation()
+    return True
+
+
 @router.post("/generate-all-m3u")
 async def generate_all_playlists_m3u(background_tasks: BackgroundTasks):
     """批量生成所有播放清單的 M3U 檔案到檔案系統（異步背景任務）"""

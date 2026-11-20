@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useMemo, useId } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import ArtistTagInput from '@/components/ArtistTagInput';
 import { useAutoSort } from '@/lib/useAutoSort';
+import MoveConfirmDialog from '@/components/MoveConfirmDialog';
+import { cancelPendingMove, fetchPendingMoves, previewMove, type MoveChoice, type MovePreview, type PendingMove } from '@/lib/songTags';
 import {
   chipsFromTags,
   fetchArtistDirectory,
@@ -60,7 +62,7 @@ const EMPTY_CHIPS: Record<ArtistRole, ArtistChip[]> = { artist: [], albumartist:
 interface TagEditorProps {
   song: Song | null;
   onClose: () => void;
-  onSave: (song: Song) => Promise<void>;
+  onSave: (song: Song, move?: MoveChoice) => Promise<void>;
 }
 
 export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
@@ -78,6 +80,9 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
   const [artistChips, setArtistChips] = useState<Record<ArtistRole, ArtistChip[]>>(EMPTY_CHIPS);
   const [artistDirectory, setArtistDirectory] = useState<ArtistDirectory | null>(null);
   const [directoryReady, setDirectoryReady] = useState(false);
+  // 路徑會改變時等待使用者在確認視窗中選擇
+  const [moveRequest, setMoveRequest] = useState<{ song: Song; preview: MovePreview & { proposal: NonNullable<MovePreview['proposal']> } } | null>(null);
+  const [pendingMove, setPendingMove] = useState<PendingMove | null>(null);
   const titleId = useId();
   // 排序標題由標題自動轉拼音，不手動編輯
   const titleSort = useAutoSort(editedSong?.Title ?? '', song?.Title ?? '', song?.SortTitle ?? '');
@@ -130,6 +135,17 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
         setCoverImage(null);
       }
     }
+  }, [song]);
+
+  // 這首歌是否有排隊中（等待 Navidrome 掃描）或失敗的檔案移動
+  useEffect(() => {
+    if (!song) return;
+    let cancelled = false;
+    setPendingMove(null);
+    fetchPendingMoves()
+      .then(moves => { if (!cancelled) setPendingMove(moves.find(move => move.source === song.FilePath) ?? null); })
+      .catch(error => console.error('Failed to load pending moves:', error));
+    return () => { cancelled = true; };
   }, [song]);
 
   // 每次開啟編輯器時重新載入歌手清單，確保包含最新存檔的名字
@@ -333,11 +349,42 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
         (song[field.name] as string) = joinNames(chips);
         (song[field.sort] as string) = joinSorts(chips);
       }
+      // 改到歌手、專輯、標題或曲目編號而使路徑改變時，先詢問是否移動檔案
+      const preview = await previewMove(song.FilePath, song);
+      if (preview.proposal) {
+        setMoveRequest({ song, preview: { ...preview, proposal: preview.proposal } });
+        return;
+      }
       await onSave(song);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : '儲存失敗，請重試');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleMoveChoice = async (choice: MoveChoice | null) => {
+    const request = moveRequest;
+    setMoveRequest(null);
+    if (!request || !choice) return;
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      await onSave(request.song, choice);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : '儲存失敗，請重試');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleCancelPendingMove = async () => {
+    if (!pendingMove) return;
+    try {
+      await cancelPendingMove(pendingMove.source);
+      setPendingMove(null);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : '取消移動失敗，請重試');
     }
   };
 
@@ -358,6 +405,22 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
           <div className="border p-4 rounded-xl bg-white">
             <h3 className="font-medium text-gray-900 mb-3">Path</h3>
             <label className="text-sm text-gray-500 block mb-1">{editedSong.FilePath}</label>
+            {pendingMove && (
+              <div
+                role="status"
+                data-testid="pending-move"
+                className={`mt-3 rounded-md px-3 py-2 text-sm ${pendingMove.status === 'failed' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-800'}`}
+              >
+                <p>
+                  {pendingMove.status === 'failed' ? '檔案移動失敗：' : '等待 Navidrome 掃描後移動到：'}
+                  <span className="break-all">{pendingMove.target}</span>
+                </p>
+                {pendingMove.error && <p className="mt-1">{pendingMove.error}</p>}
+                <Button variant="outline" size="sm" className="mt-2" onClick={handleCancelPendingMove}>
+                  {pendingMove.status === 'failed' ? '清除這筆移動' : '取消移動'}
+                </Button>
+              </div>
+            )}
           </div>
           <div className="border p-4 rounded-xl bg-white gap-2">
             <div
@@ -648,6 +711,7 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
 
         <div className="p-4 border-t bg-white">
           {saveError && <p role="alert" className="text-sm text-red-600 mb-2">{saveError}</p>}
+          {moveRequest && <MoveConfirmDialog preview={moveRequest.preview} onChoose={handleMoveChoice} />}
           <Button onClick={handleSave} disabled={isSaving || isReadingCover} className="w-full flex items-center gap-2">
             <Save className="h-4 w-4" />
             {isSaving ? '儲存中...' : '保存變更'}
