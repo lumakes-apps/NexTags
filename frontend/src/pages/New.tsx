@@ -50,6 +50,14 @@ interface BaseFolderOption {
     label: string
 }
 
+interface ChunkUploadInitResponse {
+    upload_id: string
+    chunk_size: number
+    total_chunks: number
+}
+
+const DEFAULT_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
+
 export default function NewMusicPage() {
     // 狀態管理
     const [currentSession, setCurrentSession] = useState<ImportSession | null>(null)
@@ -92,20 +100,61 @@ export default function NewMusicPage() {
         }
     }
 
+    const postChunkWithRetry = async (formData: FormData, maxRetries = 2) => {
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                return await api.postFormData('music-import/upload/chunk', formData)
+            } catch (error) {
+                if (attempt === maxRetries) {
+                    throw error
+                }
+                await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)))
+            }
+        }
+    }
+
+    const uploadFileInChunks = async (file: File) => {
+        const init = await api.post('music-import/upload/init', {
+            filename: file.name,
+            size: file.size,
+            base_folder: selectedBaseFolder
+        }) as ChunkUploadInitResponse
+
+        const chunkSize = init.chunk_size || DEFAULT_UPLOAD_CHUNK_SIZE
+        const totalChunks = init.total_chunks || Math.ceil(file.size / chunkSize)
+
+        for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+            const start = chunkIndex * chunkSize
+            const end = Math.min(file.size, start + chunkSize)
+            const chunk = file.slice(start, end)
+            const formData = new FormData()
+
+            formData.append('upload_id', init.upload_id)
+            formData.append('chunk_index', String(chunkIndex))
+            formData.append('total_chunks', String(totalChunks))
+            formData.append('file', chunk, file.name)
+
+            await postChunkWithRetry(formData)
+
+            const uploadProgress = 5 + Math.round(((chunkIndex + 1) / totalChunks) * 15)
+            setProgress(Math.min(uploadProgress, 20))
+        }
+
+        return await api.post('music-import/upload/complete', {
+            upload_id: init.upload_id
+        })
+    }
+
     // 處理文件（通用函數）
     const processFile = async (file: File) => {
         if (!file || !selectedBaseFolder) return
 
         setIsLoading(true)
         setError(null)
-        setProgress(10)
+        setProgress(5)
 
         try {
-            const formData = new FormData()
-            formData.append('file', file)
-            formData.append('base_folder', selectedBaseFolder)
-
-            const data = await api.postFormData('music-import/upload', formData)
+            const data = await uploadFileInChunks(file)
 
             setCurrentSession(data)
             setProgress(20)

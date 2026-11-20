@@ -1,10 +1,30 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useId } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
+import ArtistTagInput from '@/components/ArtistTagInput'
+import { useAutoSort } from '@/lib/useAutoSort'
+import { cleanLyricsWithAI, useIntegrationAvailable } from '@/lib/integrations'
+import {
+    SORT_FIELD,
+    chipsFromTags,
+    fetchArtistDirectory,
+    joinNames,
+    joinSorts,
+    resolveChips,
+    type ArtistChip,
+    type ArtistDirectory,
+    type ArtistRole,
+} from '@/lib/artists'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { ArrowRight, Save, Sparkles, X } from 'lucide-react'
+import { Save, Sparkles, X } from 'lucide-react'
+
+const ARTIST_ROLES: ArtistRole[] = ['artist', 'albumartist', 'composer', 'performer']
+
+const chipsFromTagDict = (tags: Record<string, unknown>) =>
+    Object.fromEntries(ARTIST_ROLES.map(role => [role, chipsFromTags(tags[role], tags[SORT_FIELD[role]])])) as Record<ArtistRole, ArtistChip[]>
 
 interface TagEditorProps {
     filePath: string
@@ -18,10 +38,45 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
     const [loading, setLoading] = useState(false)
     const [languages, setLanguages] = useState<Record<string, string>>({})
     const [availableTags, setAvailableTags] = useState<string[]>([])
+    const [artistChips, setArtistChips] = useState<Record<ArtistRole, ArtistChip[]>>(() => chipsFromTagDict(initialTags || {}))
+    const [artistDirectory, setArtistDirectory] = useState<ArtistDirectory | null>(null)
+    const [directoryReady, setDirectoryReady] = useState(false)
+    const [saving, setSaving] = useState(false)
+    const [saveError, setSaveError] = useState<string | null>(null)
+    const [lyricsError, setLyricsError] = useState<string | null>(null)
+    // 未啟用 AI 歌詞整合或未設定金鑰時不顯示整理按鈕
+    const aiLyricsAvailable = useIntegrationAvailable('ai_lyrics')
+    const titleId = useId()
+    // 排序標題由標題自動轉拼音，不手動編輯
+    const titleSort = useAutoSort(String(tags.title || ''), String(initialTags?.title || ''), String(initialTags?.titlesort || ''))
+    const albumId = useId()
+    const albumSort = useAutoSort(String(tags.album || ''), String(initialTags?.album || ''), String(initialTags?.albumsort || ''))
+
+    // 每個歌手欄位一個穩定的 setter，讓標籤元件可以用函式更新避免競態
+    const artistSetters = useMemo(() => {
+        const setters = {} as Record<ArtistRole, Dispatch<SetStateAction<ArtistChip[]>>>
+        for (const role of ARTIST_ROLES) {
+            setters[role] = update => setArtistChips(prev => ({
+                ...prev,
+                [role]: typeof update === 'function' ? update(prev[role]) : update,
+            }))
+        }
+        return setters
+    }, [])
 
     useEffect(() => {
         setTags(initialTags || {})
+        setArtistChips(chipsFromTagDict(initialTags || {}))
     }, [initialTags])
+
+    useEffect(() => {
+        let cancelled = false
+        fetchArtistDirectory()
+            .then(directory => { if (!cancelled) setArtistDirectory(directory) })
+            .catch(error => console.error('Failed to load artists:', error))
+            .finally(() => { if (!cancelled) setDirectoryReady(true) })
+        return () => { cancelled = true }
+    }, [])
 
     useEffect(() => {
         // 載入語言清單和標籤清單
@@ -60,56 +115,15 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
         }))
     }
 
-    const convertToPinyin = async (field: string) => {
-        const sourceValue = tags[field]
-        if (!sourceValue) return
-
-        setLoading(true)
-        try {
-            const response = await fetch('/api/tools/pinyin', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: sourceValue })
-            })
-
-            const data = await response.json()
-
-            if (response.ok && data.result) {
-                const sortField = field.toLowerCase().includes('title') ? 'titlesort' :
-                    field.toLowerCase().includes('artist') && !field.toLowerCase().includes('album') ? 'artistsort' :
-                        field.toLowerCase().includes('album') && !field.toLowerCase().includes('artist') ? 'albumsort' :
-                            field.toLowerCase().includes('albumartist') ? 'albumartistsort' :
-                                field.toLowerCase().includes('composer') ? 'composersort' :
-                                    field.toLowerCase().includes('performer') ? 'performersort' : ''
-                if (sortField) {
-                    handleInputChange(sortField, data.result)
-                }
-            }
-        } catch (error) {
-            console.error('Pinyin conversion failed:', error)
-        } finally {
-            setLoading(false)
-        }
-    }
-
     const processLyrics = async () => {
         if (!tags.lyrics) return
 
         setLoading(true)
+        setLyricsError(null)
         try {
-            const response = await fetch('/api/tools/lyric', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ lyric: tags.lyrics })
-            })
-
-            const data = await response.json()
-
-            if (response.ok && data.result) {
-                handleInputChange('lyrics', data.result)
-            }
+            handleInputChange('lyrics', await cleanLyricsWithAI(String(tags.lyrics)))
         } catch (error) {
-            console.error('Lyric processing failed:', error)
+            setLyricsError(error instanceof Error ? error.message : 'AI 整理歌詞失敗，請重試')
         } finally {
             setLoading(false)
         }
@@ -129,8 +143,24 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
         handleInputChange('genre', newGenres)
     }
 
-    const handleSave = () => {
-        onSave(tags)
+    const handleSave = async () => {
+        if (saving) return
+        setSaving(true)
+        setSaveError(null)
+        try {
+            // 由歌手標籤組出名字與排序欄位；尚未決定的排序名稱在這裡補齊
+            const next: Record<string, unknown> = { ...tags, titlesort: await titleSort.resolve(), albumsort: await albumSort.resolve() }
+            for (const role of ARTIST_ROLES) {
+                const chips = await resolveChips(artistChips[role], artistDirectory)
+                next[role] = joinNames(chips)
+                next[SORT_FIELD[role]] = joinSorts(chips)
+            }
+            onSave(next)
+        } catch (error) {
+            setSaveError(error instanceof Error ? error.message : '儲存失敗，請重試')
+        } finally {
+            setSaving(false)
+        }
     }
 
     return (
@@ -144,178 +174,78 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
                 <h3 className="text-lg font-semibold">基本資訊</h3>
 
                 {/* 標題 */}
-                <div className="flex items-end gap-4">
-                    <div className="flex-1">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">標題</label>
-                        <Input
-                            value={String(tags.title || '')}
-                            onChange={(e) => handleInputChange('title', e.target.value)}
-                            placeholder="歌曲標題"
-                        />
-                    </div>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => convertToPinyin('title')}
-                        disabled={loading}
-                        className="w-8 h-8 p-0"
-                    >
-                        <ArrowRight className="h-4 w-4" />
-                    </Button>
-                    <div className="flex-1">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">排序標題</label>
-                        <Input
-                            value={String(tags.titlesort || '')}
-                            onChange={(e) => handleInputChange('titlesort', e.target.value)}
-                            placeholder="排序標題"
-                        />
-                    </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor={titleId}>標題</label>
+                    <Input
+                        id={titleId}
+                        value={String(tags.title || '')}
+                        onChange={(e) => handleInputChange('title', e.target.value)}
+                        placeholder="歌曲標題"
+                        aria-describedby={`${titleId}-sort`}
+                    />
+                    <p id={`${titleId}-sort`} className="mt-1 text-xs text-gray-400" data-testid="title-sort-preview">
+                        排序：{titleSort.sort ?? '…'}
+                    </p>
                 </div>
 
-                {/* 歌手 */}
-                <div className="flex items-end gap-4">
-                    <div className="flex-1">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">歌手</label>
-                        <Input
-                            value={String(tags.artist || '')}
-                            onChange={(e) => handleInputChange('artist', e.target.value)}
-                            placeholder="歌手名稱"
-                        />
-                    </div>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => convertToPinyin('artist')}
-                        disabled={loading}
-                        className="w-8 h-8 p-0"
-                    >
-                        <ArrowRight className="h-4 w-4" />
-                    </Button>
-                    <div className="flex-1">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">排序歌手</label>
-                        <Input
-                            value={String(tags.artistsort || '')}
-                            onChange={(e) => handleInputChange('artistsort', e.target.value)}
-                            placeholder="排序歌手"
-                        />
-                    </div>
-                </div>
+                <ArtistTagInput
+                    label="歌手"
+                    role="artist"
+                    value={artistChips.artist}
+                    onChange={artistSetters.artist}
+                    directory={artistDirectory}
+                    directoryReady={directoryReady}
+                    disabled={saving}
+                    labelClassName="block text-sm font-medium text-gray-700 mb-1"
+                />
 
                 {/* 專輯 */}
-                <div className="flex items-end gap-4">
-                    <div className="flex-1">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">專輯</label>
-                        <Input
-                            value={String(tags.album || '')}
-                            onChange={(e) => handleInputChange('album', e.target.value)}
-                            placeholder="專輯名稱"
-                        />
-                    </div>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => convertToPinyin('album')}
-                        disabled={loading}
-                        className="w-8 h-8 p-0"
-                    >
-                        <ArrowRight className="h-4 w-4" />
-                    </Button>
-                    <div className="flex-1">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">排序專輯</label>
-                        <Input
-                            value={String(tags.albumsort || '')}
-                            onChange={(e) => handleInputChange('albumsort', e.target.value)}
-                            placeholder="排序專輯"
-                        />
-                    </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor={albumId}>專輯</label>
+                    <Input
+                        id={albumId}
+                        value={String(tags.album || '')}
+                        onChange={(e) => handleInputChange('album', e.target.value)}
+                        placeholder="專輯名稱"
+                        aria-describedby={`${albumId}-sort`}
+                    />
+                    <p id={`${albumId}-sort`} className="mt-1 text-xs text-gray-400" data-testid="album-sort-preview">
+                        排序：{albumSort.sort ?? '…'}
+                    </p>
                 </div>
 
-                {/* 專輯歌手 */}
-                <div className="flex items-end gap-4">
-                    <div className="flex-1">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">專輯歌手</label>
-                        <Input
-                            value={String(tags.albumartist || '')}
-                            onChange={(e) => handleInputChange('albumartist', e.target.value)}
-                            placeholder="專輯歌手名稱"
-                        />
-                    </div>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => convertToPinyin('albumartist')}
-                        disabled={loading}
-                        className="w-8 h-8 p-0"
-                    >
-                        <ArrowRight className="h-4 w-4" />
-                    </Button>
-                    <div className="flex-1">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">排序專輯歌手</label>
-                        <Input
-                            value={String(tags.albumartistsort || '')}
-                            onChange={(e) => handleInputChange('albumartistsort', e.target.value)}
-                            placeholder="排序專輯歌手"
-                        />
-                    </div>
-                </div>
+                <ArtistTagInput
+                    label="專輯歌手"
+                    role="albumartist"
+                    value={artistChips.albumartist}
+                    onChange={artistSetters.albumartist}
+                    directory={artistDirectory}
+                    directoryReady={directoryReady}
+                    disabled={saving}
+                    labelClassName="block text-sm font-medium text-gray-700 mb-1"
+                />
 
-                {/* 作曲家 */}
-                <div className="flex items-end gap-4">
-                    <div className="flex-1">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">作曲家</label>
-                        <Input
-                            value={String(tags.composer || '')}
-                            onChange={(e) => handleInputChange('composer', e.target.value)}
-                            placeholder="作曲家名稱"
-                        />
-                    </div>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => convertToPinyin('composer')}
-                        disabled={loading}
-                        className="w-8 h-8 p-0"
-                    >
-                        <ArrowRight className="h-4 w-4" />
-                    </Button>
-                    <div className="flex-1">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">排序作曲家</label>
-                        <Input
-                            value={String(tags.composersort || '')}
-                            onChange={(e) => handleInputChange('composersort', e.target.value)}
-                            placeholder="排序作曲家"
-                        />
-                    </div>
-                </div>
+                <ArtistTagInput
+                    label="作曲家"
+                    role="composer"
+                    value={artistChips.composer}
+                    onChange={artistSetters.composer}
+                    directory={artistDirectory}
+                    directoryReady={directoryReady}
+                    disabled={saving}
+                    labelClassName="block text-sm font-medium text-gray-700 mb-1"
+                />
 
-                {/* 演奏者 */}
-                <div className="flex items-end gap-4">
-                    <div className="flex-1">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">演奏者</label>
-                        <Input
-                            value={String(tags.performer || '')}
-                            onChange={(e) => handleInputChange('performer', e.target.value)}
-                            placeholder="演奏者名稱"
-                        />
-                    </div>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => convertToPinyin('performer')}
-                        disabled={loading}
-                        className="w-8 h-8 p-0"
-                    >
-                        <ArrowRight className="h-4 w-4" />
-                    </Button>
-                    <div className="flex-1">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">排序演奏者</label>
-                        <Input
-                            value={String(tags.performersort || '')}
-                            onChange={(e) => handleInputChange('performersort', e.target.value)}
-                            placeholder="排序演奏者"
-                        />
-                    </div>
-                </div>
+                <ArtistTagInput
+                    label="演奏者"
+                    role="performer"
+                    value={artistChips.performer}
+                    onChange={artistSetters.performer}
+                    directory={artistDirectory}
+                    directoryReady={directoryReady}
+                    disabled={saving}
+                    labelClassName="block text-sm font-medium text-gray-700 mb-1"
+                />
 
                 {/* 軌道編號 */}
                 <div className="grid grid-cols-2 gap-4">
@@ -330,8 +260,8 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">總軌道數</label>
                         <Input
-                            value={String(tags.totaltracks || '')}
-                            onChange={(e) => handleInputChange('totaltracks', e.target.value)}
+                            value={String(tags.tracktotal || '')}
+                            onChange={(e) => handleInputChange('tracktotal', e.target.value)}
                             placeholder="12"
                         />
                     </div>
@@ -447,17 +377,21 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
             <div>
                 <div className="flex items-center justify-between mb-1">
                     <label className="block text-sm font-medium text-gray-700">歌詞</label>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={processLyrics}
-                        disabled={loading || !tags.lyrics}
-                        className="text-xs"
-                    >
-                        <Sparkles className='size-4' />
-                        {loading ? '處理中...' : ''}
-                    </Button>
+                    {aiLyricsAvailable && (
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={processLyrics}
+                            disabled={loading || !tags.lyrics}
+                            className="text-xs"
+                            aria-label="AI 整理歌詞"
+                        >
+                            <Sparkles className='size-4' />
+                            {loading ? '處理中...' : ''}
+                        </Button>
+                    )}
                 </div>
+                {lyricsError && <p role="alert" className="text-sm text-red-600">{lyricsError}</p>}
                 <textarea
                     value={String(tags.lyrics || '')}
                     onChange={(e) => handleInputChange('lyrics', e.target.value)}
@@ -468,10 +402,11 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
             </div>
 
             {/* 按鈕 */}
+            {saveError && <p role="alert" className="text-sm text-red-600 text-right">{saveError}</p>}
             <div className="flex space-x-4 justify-end">
-                <Button onClick={handleSave} className="flex items-center gap-2">
+                <Button onClick={handleSave} disabled={saving} className="flex items-center gap-2">
                     <Save className="h-4 w-4" />
-                    儲存標籤
+                    {saving ? '儲存中...' : '儲存標籤'}
                 </Button>
                 <Button onClick={onCancel} variant="outline" className="flex items-center gap-2">
                     <X className="h-4 w-4" />

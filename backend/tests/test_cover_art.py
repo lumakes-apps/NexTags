@@ -46,8 +46,12 @@ class CoverPersistenceTests(unittest.TestCase):
 
     def make_audio(self, extension='flac'):
         target = self.root / f'song.{extension}'
+        # 不指定 codec 時，缺 libvorbis 的 ffmpeg（如 Homebrew）會把 .ogg 編成 Ogg FLAC；
+        # 改用內建 vorbis 編碼器（僅支援雙聲道）確保產生 Ogg Vorbis。
+        codec = ['-ac', '2', '-c:a', 'vorbis', '-strict', '-2'] if extension == 'ogg' else []
         subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=mono',
-                        '-t', '0.05', '-metadata', 'title=Original title', str(target)], check=True, capture_output=True)
+                        '-t', '0.05', *codec, '-metadata', 'title=Original title', str(target)],
+                       check=True, capture_output=True)
         return target
 
     def test_cover_replacement_persists_in_all_supported_formats(self):
@@ -66,6 +70,9 @@ class CoverPersistenceTests(unittest.TestCase):
                     self.assertEqual(pcm_digest(), original)
                 self.assertFalse((self.root / 'cover.jpg').exists())
 
+    def cover_events(self):
+        return [call.args[0] for call in self.hook.call_args_list].count('audio_cover_update')
+
     def make_client(self):
         # Isolate module initialization from any production SQLite database.
         with patch.dict(os.environ, {'SQLITE_DB_PATH': str(self.root / 'test.db')}):
@@ -80,7 +87,7 @@ class CoverPersistenceTests(unittest.TestCase):
                         patch.object(audio, 'get_folder_from_path', return_value='B 人聲')]:
             patcher.start()
             self.addCleanup(patcher.stop)
-        hook = patch.object(audio, 'request_navidrome_refresh', create=True)
+        hook = patch.object(audio, 'emit_event')
         self.hook = hook.start()
         self.addCleanup(hook.stop)
         return TestClient(app)
@@ -101,7 +108,7 @@ class CoverPersistenceTests(unittest.TestCase):
         from mutagen.flac import FLAC
         self.assertEqual(FLAC(target)['title'], ['Updated title'])
         self.assertEqual(self.cache.upsert_audio_record.call_count, 2)
-        self.hook.assert_called_once()
+        self.assertEqual(self.cover_events(), 1)  # 只有換封面才通知 Navidrome
 
     def test_invalid_image_does_not_change_the_audio_or_report_success(self):
         target = self.make_audio()
@@ -111,7 +118,7 @@ class CoverPersistenceTests(unittest.TestCase):
         self.assertEqual(result.status_code, 400)
         self.assertEqual(target.read_bytes(), original)
         self.cache.upsert_audio_record.assert_not_called()
-        self.hook.assert_not_called()
+        self.assertEqual(self.cover_events(), 0)
 
     def test_tag_only_save_preserves_the_existing_cover(self):
         target = self.make_audio()
@@ -122,7 +129,7 @@ class CoverPersistenceTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertEqual(get_cover_data_from_audio(str(target))[0], image)
         self.assertEqual((self.root / 'cover.jpg').read_bytes(), image)
-        self.hook.assert_not_called()
+        self.assertEqual(self.cover_events(), 0)
 
     def test_missing_or_outside_paths_keep_the_correct_error_status(self):
         client = self.make_client()
@@ -137,7 +144,7 @@ class CoverPersistenceTests(unittest.TestCase):
             result = client.put('/audios/update', json={'path': str(target), 'tags': [], 'cover_data': image_data()[0]})
         self.assertEqual(result.status_code, 500)
         self.cache.upsert_audio_record.assert_not_called()
-        self.hook.assert_not_called()
+        self.assertEqual(self.cover_events(), 0)
 
 
 if __name__ == '__main__':

@@ -14,9 +14,15 @@ class RedisCache:
     CATALOG_FOLDER_PATTERN = "audio_catalog:folder:*"
     CATALOG_PATHS_KEY = "audio_catalog:paths"
     CATALOG_REBUILD_KEY = "audio_catalog:last_rebuild_at"
-    # 以修改時間為 score 的索引，供列表 server-side 分頁（ZREVRANGE）。
+    # 以加入時間為 score 的索引，供列表 server-side 分頁（ZREVRANGE）。
     # 純附加索引：缺失時可由現有 records 無損回填，不影響主資料。
-    CATALOG_MTIME_ZSET = "audio_catalog:by_mtime"
+    CATALOG_ADDED_ZSET = "audio_catalog:by_added"
+    # 舊版以 mtime 為 score 的索引；改用加入時間後於清除/重建時一併移除。
+    LEGACY_MTIME_ZSET = "audio_catalog:by_mtime"
+    # 檔案第一次被收錄時的時間（path -> epoch）。編輯標籤會改動 mtime，
+    # 若以 mtime 排序，剛編輯的歌會被當成最新加入；因此另存一份不隨編輯變動的時間。
+    # 刻意不放在 audio_catalog:* 底下：重建 / 清除快取都不能抹掉它。
+    ADDED_TIME_HASH = "audio_library:added_time"
 
     def __init__(self):
         # 從環境變數讀取 Redis 連線資訊
@@ -101,6 +107,11 @@ class RedisCache:
 
         return "unknown"
 
+    def _resolve_added_time(self, file_path: str, fallback: float) -> float:
+        """取得檔案的加入時間；第一次見到時以 fallback（通常是 mtime）原子寫入。"""
+        self.client.hsetnx(self.ADDED_TIME_HASH, file_path, fallback or 0)
+        return float(self.client.hget(self.ADDED_TIME_HASH, file_path) or 0)
+
     def _build_catalog_record(
         self,
         file_path: str,
@@ -125,6 +136,7 @@ class RedisCache:
             "main_folder": main_folder,
             "relative_path": relative_path,
             "modification_time": modification_time,
+            "added_time": self._resolve_added_time(file_path, modification_time),
             "size": file_size,
             "cover_path": self._find_cover_art(file_path),
             "tags": serialized_tags,
@@ -152,6 +164,7 @@ class RedisCache:
             "main_folder": main_folder,
             "relative_path": relative_path,
             "modification_time": cached_data.get("modification_time", 0),
+            "added_time": self._resolve_added_time(file_path, cached_data.get("modification_time", 0)),
             "size": cached_data.get("size", 0),
             "cover_path": cached_data.get("cover_path", ""),
             "tags": tags,
@@ -247,7 +260,7 @@ class RedisCache:
             pipe.delete(cache_key)
             pipe.delete(record_key)
             pipe.srem(self.CATALOG_PATHS_KEY, file_path)
-            pipe.zrem(self.CATALOG_MTIME_ZSET, file_path)
+            pipe.zrem(self.CATALOG_ADDED_ZSET, file_path)
 
             if old_record_str:
                 try:
@@ -296,7 +309,7 @@ class RedisCache:
             pipe.set(record_key, json.dumps(record, ensure_ascii=False))
             pipe.sadd(self.CATALOG_PATHS_KEY, file_path)
             pipe.sadd(self._get_catalog_folder_key(record["main_folder"]), file_path)
-            pipe.zadd(self.CATALOG_MTIME_ZSET, {file_path: record.get("modification_time", 0) or 0})
+            pipe.zadd(self.CATALOG_ADDED_ZSET, {file_path: record["added_time"]})
             pipe.execute()
             return record
         except Exception as e:
@@ -322,7 +335,7 @@ class RedisCache:
             deleted_folders = self._clear_keys(self.CATALOG_FOLDER_PATTERN)
             self.client.delete(self.CATALOG_PATHS_KEY)
             self.client.delete(self.CATALOG_REBUILD_KEY)
-            self.client.delete(self.CATALOG_MTIME_ZSET)
+            self.client.delete(self.CATALOG_ADDED_ZSET, self.LEGACY_MTIME_ZSET)
             logger.info(f"已清空舊快取：tags={deleted_tags}, records={deleted_records}, folders={deleted_folders}")
         except Exception as e:
             logger.error(f"清空舊快取時發生錯誤: {str(e)}")
@@ -374,7 +387,7 @@ class RedisCache:
             total_deleted += self._clear_keys(self.CATALOG_FOLDER_PATTERN)
             total_deleted += self.client.delete(self.CATALOG_PATHS_KEY)
             total_deleted += self.client.delete(self.CATALOG_REBUILD_KEY)
-            total_deleted += self.client.delete(self.CATALOG_MTIME_ZSET)
+            total_deleted += self.client.delete(self.CATALOG_ADDED_ZSET, self.LEGACY_MTIME_ZSET)
 
             logger.info(f"已清空標籤快取，共刪除 {total_deleted} 個快取項目")
         except Exception as e:
@@ -498,14 +511,14 @@ class RedisCache:
             logger.error(f"讀取音訊 catalog 時發生錯誤: {str(e)}")
             return []
 
-    def _ensure_mtime_index(self) -> bool:
-        """確保 by_mtime 索引存在；缺失則由現有 records 無損回填。
+    def _ensure_added_index(self) -> bool:
+        """確保 by_added 索引存在；缺失則由現有 records 無損回填。
 
         回傳 True 表示索引可用；False 表示無 catalog 可回填（呼叫端應走既有路徑）。
         本方法只新增索引、不刪除任何主資料。
         """
         try:
-            if self.client.exists(self.CATALOG_MTIME_ZSET):
+            if self.client.exists(self.CATALOG_ADDED_ZSET):
                 return True
             # 沒有 catalog 主資料可回填 → 交回呼叫端走舊路徑（含 seed）
             if not self.client.exists(self.CATALOG_PATHS_KEY):
@@ -525,29 +538,33 @@ class RedisCache:
                     record = json.loads(value)
                 except json.JSONDecodeError:
                     continue
-                mapping[path] = record.get("modification_time", 0) or 0
+                # 舊 record 沒有 added_time，以當下 mtime 作為初始加入時間
+                mapping[path] = record.get("added_time") or self._resolve_added_time(
+                    path, record.get("modification_time", 0)
+                )
 
             if not mapping:
                 return False
 
-            self.client.zadd(self.CATALOG_MTIME_ZSET, mapping)
-            logger.info(f"已由現有 catalog 回填 by_mtime 索引，共 {len(mapping)} 筆")
+            self.client.zadd(self.CATALOG_ADDED_ZSET, mapping)
+            self.client.delete(self.LEGACY_MTIME_ZSET)
+            logger.info(f"已由現有 catalog 回填 by_added 索引，共 {len(mapping)} 筆")
             return True
         except Exception as e:
-            logger.error(f"回填 by_mtime 索引時發生錯誤: {str(e)}")
+            logger.error(f"回填 by_added 索引時發生錯誤: {str(e)}")
             return False
 
     def get_audio_records_page(self, page: int, page_size: int) -> Optional[Dict[str, Any]]:
-        """以 by_mtime 索引取單頁 records（修改時間新→舊），server-side 分頁。
+        """以 by_added 索引取單頁 records（加入時間新→舊），server-side 分頁。
 
         回傳 {records, total_count, total_pages, page}；
         索引不可用時回傳 None，由呼叫端 fallback 至既有全量路徑（不丟資料）。
         """
         try:
-            if not self._ensure_mtime_index():
+            if not self._ensure_added_index():
                 return None
 
-            total_count = self.client.zcard(self.CATALOG_MTIME_ZSET)
+            total_count = self.client.zcard(self.CATALOG_ADDED_ZSET)
             if total_count == 0:
                 return None
 
@@ -560,7 +577,7 @@ class RedisCache:
             start_index = (current_page - 1) * page_size
             end_index = start_index + page_size - 1
 
-            page_paths = self.client.zrevrange(self.CATALOG_MTIME_ZSET, start_index, end_index)
+            page_paths = self.client.zrevrange(self.CATALOG_ADDED_ZSET, start_index, end_index)
             records = []
             if page_paths:
                 keys = [self._get_catalog_record_key(p) for p in page_paths]
@@ -616,7 +633,7 @@ class RedisCache:
                     pipe.set(record_key, json.dumps(record, ensure_ascii=False))
                     pipe.sadd(self.CATALOG_PATHS_KEY, file_path)
                     pipe.sadd(self._get_catalog_folder_key(record["main_folder"]), file_path)
-                    pipe.zadd(self.CATALOG_MTIME_ZSET, {file_path: record.get("modification_time", 0) or 0})
+                    pipe.zadd(self.CATALOG_ADDED_ZSET, {file_path: record["added_time"]})
                     batch_count += 1
 
                     if not requested_folders or record["main_folder"] in requested_folders:

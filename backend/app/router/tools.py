@@ -19,10 +19,12 @@ async def pinyin_text(request: TextPressRequest):
     
 
 @router.post("/lyric", response_model=LyricPressResponse)
-async def lyric_tools(req: LyricPressRequest):
+def lyric_tools(req: LyricPressRequest):
     try:
         return LyricPressResponse(
             result=lrc_process(req.lyric)
         )
+    except ValueError as e:  # AI 歌詞整合未啟用或未設定金鑰
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"轉換歌詞發生錯誤: {str(e)}")

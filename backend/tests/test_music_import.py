@@ -65,7 +65,7 @@ class ImportEditedTagsTests(unittest.IsolatedAsyncioTestCase):
             patch.object(music_import, 'generate_replaygain', return_value=(True, 'test')),
             patch.object(music_import, 'extract_cover_from_audio', return_value=(False, '')),
             patch.object(music_import, 'redis_cache', None),
-            patch.object(music_import, 'request_navidrome_refresh'),
+            patch.object(music_import, 'emit_event'),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -127,3 +127,37 @@ class ImportEditedTagsTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@unittest.skipUnless(shutil.which('ffmpeg'), 'MP3 integration tests require ffmpeg')
+class ImportMp3ResponseTests(unittest.IsolatedAsyncioTestCase):
+    """MP3 的讀取結果含有 mutagen 原始 ID3 物件，匯入 API 的回應仍必須能轉成 JSON。"""
+
+    def setUp(self):
+        from mutagen.id3 import APIC, ID3, TIT2, TPE1
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.audio_path = Path(self.temp_dir.name) / 'song.mp3'
+        subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=mono',
+                        '-t', '0.05', str(self.audio_path)], check=True, capture_output=True)
+        tags = ID3()
+        tags.add(TIT2(encoding=3, text='MP3 歌')); tags.add(TPE1(encoding=3, text='歌手'))
+        tags.add(APIC(encoding=3, mime='image/jpeg', type=3, desc='Front cover', data=b'\xff\xd8\xff\x00binary'))
+        tags.save(self.audio_path)
+        self.file_id = 'mp3-response-regression'
+        music_import.update_import_status(self.file_id, ImportStatus.UPLOADED, temp_path=str(self.audio_path),
+                                          base_folder='B 人聲', format='mp3', original_filename='song.mp3')
+        self.addCleanup(music_import.import_sessions.pop, self.file_id, None)
+        patcher = patch.object(music_import, 'generate_replaygain', return_value=(True, 'test'))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def test_extract_and_update_responses_serialize(self):
+        extracted = await music_import.extract_music_tags(ExtractTagsRequest(file_id=self.file_id))
+        extracted.model_dump_json()
+        self.assertEqual((extracted.tags['title'], extracted.tags['artist']), ('MP3 歌', '歌手'))
+        self.assertNotIn('APIC:Front cover', extracted.tags)
+        updated = await music_import.update_music_tags(
+            UpdateTagsRequest(file_id=self.file_id, tags={**extracted.tags, 'title': '新標題'}))
+        updated.model_dump_json()
+        self.assertEqual(updated.updated_tags['title'], '新標題')

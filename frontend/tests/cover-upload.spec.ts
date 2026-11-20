@@ -25,6 +25,12 @@ async function openEditor(page: Page, existingCover = '') {
             response = { chi: '中文' }
         } else if (endpoint === 'tags/tags') {
             response = []
+        } else if (endpoint === 'tags/artists' || endpoint === 'audios/pending-moves') {
+            response = []
+        } else if (endpoint === 'audios/move-preview') {
+            response = { proposal: null }
+        } else if (endpoint === 'tools/pinyin') {
+            response = { result: route.request().postDataJSON().text }
         } else if (endpoint === 'audios/update') {
             const data = route.request().postDataJSON()
             saves.push(data)
@@ -51,11 +57,12 @@ test('cover stays pending until the save completes and remains after reopening',
     const { saves, control } = await openEditor(page)
     control.hold = true
     await page.locator('input[type=file]').setInputFiles(image)
-    await expect(page.getByRole('status')).toContainText('封面尚未儲存')
+    await expect(page.getByRole('status').filter({ hasText: '封面尚未儲存' })).toBeVisible()
     expect(saves).toHaveLength(0)
     await page.getByRole('button', { name: '保存變更' }).click()
     await expect(page.getByRole('button', { name: '儲存中...' })).toBeDisabled()
     await expect(page.getByText('標籤與封面已儲存', { exact: true })).toHaveCount(0)
+    await expect.poll(() => saves.length).toBe(1) // 存檔前會先預覽是否需要移動檔案
     expect(saves[0].cover_data).toBe(`data:image/png;base64,${imageBytes.toString('base64')}`)
     control.release?.()
     await expect(page.getByText('標籤與封面已儲存', { exact: true })).toBeVisible()
@@ -99,7 +106,7 @@ test('server error details remain visible in the editor', async ({ page }) => {
     const { control } = await openEditor(page)
     control.httpFailure = true
     await page.locator('input[type=file]').setInputFiles(image)
-    await expect(page.getByRole('status')).toContainText('封面尚未儲存')
+    await expect(page.getByRole('status').filter({ hasText: '封面尚未儲存' })).toBeVisible()
     await page.getByRole('button', { name: '保存變更' }).click()
     await expect(page.getByRole('alert')).toHaveText('封面資料夾無法寫入')
     await expect(page.getByRole('heading', { name: '編輯標籤' })).toBeVisible()
@@ -109,7 +116,7 @@ test('a generic success response cannot falsely confirm a cover save', async ({ 
     const { control } = await openEditor(page)
     control.missingCoverAck = true
     await page.locator('input[type=file]').setInputFiles(image)
-    await expect(page.getByRole('status')).toContainText('封面尚未儲存')
+    await expect(page.getByRole('status').filter({ hasText: '封面尚未儲存' })).toBeVisible()
     await page.getByRole('button', { name: '保存變更' }).click()
     await expect(page.getByRole('alert')).toHaveText('伺服器未確認封面已儲存，請重試')
     await expect(page.getByRole('heading', { name: '編輯標籤' })).toBeVisible()

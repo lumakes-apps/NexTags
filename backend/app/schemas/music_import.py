@@ -31,6 +31,21 @@ class FileUploadResponse(BaseModel):
     format: AudioFormat
     needs_conversion: bool
 
+class ChunkUploadInitRequest(BaseModel):
+    filename: str
+    size: int
+    base_folder: str
+
+class ChunkUploadInitResponse(BaseModel):
+    success: bool
+    message: str
+    upload_id: str
+    chunk_size: int
+    total_chunks: int
+
+class ChunkUploadCompleteRequest(BaseModel):
+    upload_id: str
+
 class ConvertFileRequest(BaseModel):
     file_id: str
 

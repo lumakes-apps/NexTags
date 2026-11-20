@@ -18,7 +18,7 @@ from app.schemas.playlists import (
 from app.dependencies.logger import logger
 from app.dependencies.mp3tag_reader import read_audio_tags
 from app.dependencies.redis_cache import redis_cache
-from app.dependencies.navidrome_hook import request_navidrome_refresh
+from app.integrations import emit_event
 from app.dependencies.database import db, serialize_list, deserialize_list
 from app.services.shared_state import RedisDoc
 from app.router.config import get_config
@@ -313,7 +313,7 @@ def sort_songs_by_creation_time(
     songs: List[str],
     metadata_cache: Optional[Dict[str, Dict[str, Any]]] = None
 ) -> List[str]:
-    """根據檔案建立時間排序（新→舊）"""
+    """根據加入時間排序（新→舊）；無 catalog 時退回檔案 mtime"""
     try:
         songs_with_time = []
         logger.info(f"開始排序 {len(songs)} 首歌曲")
@@ -322,7 +322,10 @@ def sort_songs_by_creation_time(
             try:
                 cached_record = metadata_cache.get(song) if metadata_cache else None
                 if cached_record and cached_record.get("modification_time") is not None:
-                    modification_time = float(cached_record.get("modification_time") or 0)
+                    # 優先用加入時間：編輯標籤會改 mtime，不能讓剛編輯的歌變成「最新」
+                    modification_time = float(
+                        cached_record.get("added_time") or cached_record.get("modification_time") or 0
+                    )
                     creation_time = modification_time
                 else:
                     # 獲取檔案時間戳
@@ -441,10 +444,10 @@ def get_favorites_display_name(favorites: Optional[bool]) -> str:
 def get_sort_method_display_name(sort_method: str) -> str:
     """獲取排序方式的顯示名稱"""
     sort_methods = {
-        "creation_time": "檔案建立時間",
+        "creation_time": "加入時間",
         "title": "標題 (TitleSort)"
     }
-    return sort_methods.get(sort_method, "檔案建立時間")
+    return sort_methods.get(sort_method, "加入時間")
 
 def enrich_playlist_data(playlist_data: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
     """豐富播放清單資料，加入顯示名稱"""
@@ -674,7 +677,7 @@ def _get_playlist_songs_impl(id: int, sort_by: str):
             sorted_songs = sort_songs_by_title(filtered_songs, tag_cache)
             sort_method_desc = "title"
         else:
-            # 預設使用檔案建立時間排序（新→舊）
+            # 預設使用加入時間排序（新→舊）
             sorted_songs = sort_songs_by_creation_time(filtered_songs, metadata_cache)
             sort_method_desc = "file_creation_time"
         
@@ -691,7 +694,9 @@ def _get_playlist_songs_impl(id: int, sort_by: str):
                 try:
                     cached_record = metadata_cache.get(file_path)
                     if cached_record and cached_record.get("modification_time") is not None:
-                        modification_time = float(cached_record.get("modification_time") or 0)
+                        modification_time = float(
+                            cached_record.get("added_time") or cached_record.get("modification_time") or 0
+                        )
                     else:
                         modification_time = os.stat(file_path).st_mtime
                     dt = datetime.fromtimestamp(modification_time)
@@ -810,7 +815,7 @@ def generate_m3u_content(
     if sort_method == 'title':
         sorted_songs = sort_songs_by_title(filtered_songs, tag_cache)
     else:
-        # 預設使用檔案建立時間排序（新→舊）
+        # 預設使用加入時間排序（新→舊）
         sorted_songs = sort_songs_by_creation_time(filtered_songs, metadata_cache)
 
     logger.info(f"找到 {len(sorted_songs)} 首歌曲，生成 M3U 檔案")
@@ -940,7 +945,7 @@ def _generate_playlist_m3u_to_file_impl(id: int):
             )
 
         logger.info(f"成功生成 M3U 檔案到: {m3u_file_path}")
-        request_navidrome_refresh(
+        emit_event(
             "playlist_generate_m3u",
             {
                 "playlist_id": id,
@@ -1218,7 +1223,7 @@ def _perform_batch_m3u_generation():
 
         logger.info(f"背景任務完成：清理 {cleaned_files_count} 個舊檔案，成功生成 {success_count} 個，失敗 {error_count} 個")
         if success_count > 0:
-            request_navidrome_refresh(
+            emit_event(
                 "playlist_batch_generate_m3u",
                 {
                     "success_count": success_count,
@@ -1238,6 +1243,26 @@ def _perform_batch_m3u_generation():
         }
         status["completed_at"] = datetime.now().isoformat()
         _batch_m3u_doc.set(status)
+
+
+def regenerate_all_m3u() -> bool:
+    """同步重新產生所有播放清單的 M3U（供背景工作使用，例如檔案移動後）。
+
+    已有批量任務在執行時略過並回傳 False，由執行中的任務產生最新結果。
+    """
+    if _batch_m3u_doc.get()["status"] == "running":
+        return False
+    _batch_m3u_doc.set({
+        "status": "running",
+        "progress": 0,
+        "total": 0,
+        "message": "正在初始化批量生成任務...",
+        "result": None,
+        "started_at": datetime.now().isoformat(),
+        "completed_at": None
+    })
+    _perform_batch_m3u_generation()
+    return True
 
 
 @router.post("/generate-all-m3u")

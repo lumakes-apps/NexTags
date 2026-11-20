@@ -1,7 +1,10 @@
+import asyncio
 from fastapi import APIRouter, HTTPException
-from typing import List
+from typing import Dict, List
 from pydantic import BaseModel
 from app.router.config import get_config
+from app.dependencies.artist_index import build_artist_index
+from app.dependencies.redis_cache import redis_cache
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
@@ -9,6 +12,11 @@ router = APIRouter(prefix="/tags", tags=["tags"])
 class BaseFoldersResponse(BaseModel):
     success: bool
     base_folders: List[str]
+
+class ArtistEntry(BaseModel):
+    name: str
+    sort: str
+    roles: Dict[str, int]
 
 @router.get("/tags")
 async def get_supported_tags() -> List[str]:
@@ -39,3 +47,17 @@ async def get_base_folders() -> BaseFoldersResponse:
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"讀取資料夾清單時發生錯誤: {str(e)}")
+
+def _load_artist_index() -> List[dict]:
+    if redis_cache is None:
+        return []
+    return build_artist_index(record.get('tags') or {} for record in redis_cache.get_audio_records())
+
+@router.get("/artists", response_model=List[ArtistEntry])
+async def get_artists():
+    """音樂庫中所有歌手類欄位（Artist / AlbumArtist / Composer / Performer）的名字，供標籤輸入建議使用"""
+    try:
+        # 讀取整個 catalog 屬阻塞 I/O，丟到執行緒池
+        return await asyncio.get_event_loop().run_in_executor(None, _load_artist_index)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"讀取歌手清單時發生錯誤: {str(e)}")
