@@ -37,7 +37,6 @@ class DatabaseTestCase(unittest.TestCase):
         env = patch.dict(os.environ, {"NEXTAGS_SECRET_KEY": KEY})
         env.start()
         self.addCleanup(env.stop)
-        os.environ.pop("ANTHROPIC_TOKEN", None)
 
 
 class SecretStoreTests(DatabaseTestCase):
@@ -57,12 +56,12 @@ class SecretStoreTests(DatabaseTestCase):
             with self.assertRaises(secret_store.SecretStoreError):
                 secret_store.set_secret("navidrome.password", "x")
 
-    def test_environment_variable_overrides_database(self):
-        secret_store.set_secret("ai_lyrics.api_key", "from-db")
+    def test_environment_variables_are_not_used_for_secrets(self):
         with patch.dict(os.environ, {"ANTHROPIC_TOKEN": "from-env"}):
-            self.assertEqual(secret_store.get_secret("ai_lyrics.api_key"), "from-env")
-            self.assertEqual(secret_store.secret_source("ai_lyrics.api_key"), "env")
-        self.assertEqual(secret_store.get_secret("ai_lyrics.api_key"), "from-db")
+            self.assertIsNone(secret_store.get_secret("ai_lyrics.api_key"))
+            self.assertIsNone(secret_store.secret_source("ai_lyrics.api_key"))
+            secret_store.set_secret("ai_lyrics.api_key", "from-db")
+            self.assertEqual(secret_store.get_secret("ai_lyrics.api_key"), "from-db")
 
 
 class IntegrationApiTests(DatabaseTestCase):
@@ -100,8 +99,8 @@ class IntegrationApiTests(DatabaseTestCase):
         self.assertFalse(ai["available"])
         with self.assertRaises(ValueError):
             integrations.ai_lyrics.api_key()
-        with patch.dict(os.environ, {"ANTHROPIC_TOKEN": "k"}):
-            self.assertEqual(integrations.ai_lyrics.api_key(), "k")
+        secret_store.set_secret("ai_lyrics.api_key", "k")
+        self.assertEqual(integrations.ai_lyrics.api_key(), "k")
 
 
 class EventDispatchTests(DatabaseTestCase):

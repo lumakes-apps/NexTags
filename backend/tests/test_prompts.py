@@ -14,7 +14,6 @@ from fastapi.testclient import TestClient
 # 匯入既有全域 DB/client 時也使用測試設定，避免觸及正式 SQLite 或 API key。
 with tempfile.TemporaryDirectory() as initial_dir, patch.dict(os.environ, {
     "SQLITE_DB_PATH": str(Path(initial_dir) / "initial.db"),
-    "ANTHROPIC_TOKEN": "test-key",
     "ANTHROPIC_API_KEY": "test-key",
 }):
     from app.dependencies import database, lrc_process
@@ -168,7 +167,7 @@ class LyricsPromptTests(unittest.TestCase):
         message = SimpleNamespace(stop_reason="max_tokens", content=[SimpleNamespace(text="不完整歌詞")])
         anthropic = Mock()
         anthropic.return_value.messages.create.return_value = message
-        with patch.object(lrc_process, "Anthropic", anthropic), patch.dict(os.environ, {"ANTHROPIC_TOKEN": "test-key"}):
+        with patch.object(lrc_process, "Anthropic", anthropic), patch("app.integrations.ai_lyrics.api_key", return_value="test-key"):
             response = self.client.post("/api/tools/lyric", json={"lyric": "原歌詞"})
         self.assertEqual(response.status_code, 500)
         self.assertNotIn("result", response.json())

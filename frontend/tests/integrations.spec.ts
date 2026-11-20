@@ -81,7 +81,14 @@ test('secrets are only sent when typed and can be cleared', async ({ page }) => 
     await save.click()
     await expect.poll(() => calls.puts.length).toBe(2)
     expect(calls.puts[1].body.secrets).toEqual({ password: 'new-pass' })
-    await card.getByRole('button', { name: '清除密碼' }).click()
+    // 清除鈕在輸入框右側同一列
+    const clear = card.getByRole('button', { name: '清除密碼' })
+    await expect(clear).toHaveText('清除')
+    const [inputBox, clearBox] = [await password.boundingBox(), await clear.boundingBox()]
+    expect(clearBox!.x).toBeGreaterThan(inputBox!.x + inputBox!.width - 1)
+    expect(Math.abs(clearBox!.y - inputBox!.y)).toBeLessThan(1)
+    expect(Math.abs(clearBox!.height - inputBox!.height)).toBeLessThan(1)
+    await clear.click()
     await expect.poll(() => calls.puts.length).toBe(3)
     expect(calls.puts[2].body).toEqual({ secrets: { password: null } })
 })

@@ -32,8 +32,8 @@ export interface Integration {
   available: boolean
   fields: IntegrationField[]
   settings: Record<string, unknown>
-  /** 密鑰只標示來源：'env'、'database' 或 null（未設定），不含內容 */
-  secrets: Record<string, 'env' | 'database' | null>
+  /** 密鑰只標示是否已設定：'database' 或 null（未設定），不含內容 */
+  secrets: Record<string, 'database' | null>
   master_key_configured: boolean
   status: {
     scan?: { ok: boolean; request_requested_at: string; completed_at: string } | null

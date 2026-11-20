@@ -72,7 +72,6 @@ Edit `.env`:
 ```env
 MUSIC_ROOT_PATH=/path/to/your/music   # Mounted into the backend as /Music
 NEXTAGS_SECRET_KEY=                    # Encrypts integration secrets (see .env.example)
-ANTHROPIC_TOKEN=                       # Optional, AI lyrics key (can also be set in Settings)
 
 REDIS_HOST=redis                       # Service name in docker-compose
 REDIS_PORT=6379
@@ -109,7 +108,7 @@ On the Playlists page, create a playlist, set filter criteria and sort order, an
 On the New page, upload an audio file and follow the steps: review extracted tags, edit if needed, upload an artist image for new artists, confirm the final location, and generate ReplayGain.
 
 ### Processing lyrics
-In the tag editor, use the lyrics tool to clean up LRC lyrics. Enable **AI 歌詞整理** under Settings → 整合 and provide an Anthropic API key there or as `ANTHROPIC_TOKEN`.
+In the tag editor, use the lyrics tool to clean up LRC lyrics. Enable **AI 歌詞整理** under Settings → 整合 and enter the Anthropic API key there (it is stored encrypted; environment variables are not used).
 
 AI lyrics instructions can be edited in **Settings → 整合 → AI 歌詞整理** (`/settings?tab=integrations&integration=ai_lyrics`; the old `?tab=prompts` link redirects there), with draft previews, explicit saving, and default restoration. See [prompt management](docs/prompt-management.md) for storage, API, and maintenance details.
 
@@ -121,8 +120,7 @@ AI lyrics instructions can be edited in **Settings → 整合 → AI 歌詞整�
 | `REDIS_HOST` | Yes | `localhost` | Use `redis` with the bundled compose files |
 | `REDIS_PORT` | Yes | `6379` | |
 | `REDIS_DB` | No | `0` | |
-| `NEXTAGS_SECRET_KEY` | Recommended | — | Fernet key that encrypts secrets saved under Settings → 整合. Without it, secrets can only come from environment variables |
-| `ANTHROPIC_TOKEN` | No | — | AI lyrics key; takes precedence over a key saved in Settings |
+| `NEXTAGS_SECRET_KEY` | Recommended | — | Fernet key that encrypts secrets saved under Settings → 整合. Without it, integration secrets cannot be saved |
 | `NAVIDROME_HOOK_STATUS_FILE` | No | `/app/data/navidrome_status/status.json` | Scan status written by the refresh hook |
 | `SQLITE_DB_PATH` | No | `/app/data/musicmanager.db` | SQLite file for playlists and config |
 | `CORS_ALLOW_ORIGINS` | No | `*` | Comma-separated origins; credentials are only allowed when not `*` |

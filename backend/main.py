@@ -79,7 +79,7 @@ async def startup_event():
 
     from app.services.secret_store import master_key_configured
     if not master_key_configured():
-        logger.warning("未設定 NEXTAGS_SECRET_KEY：整合的密鑰無法儲存，僅能使用環境變數提供的金鑰")
+        logger.warning("未設定 NEXTAGS_SECRET_KEY：整合的密碼與金鑰無法儲存或讀取")
     
     logger.info("伺服器已準備就緒，等待請求...")
 
