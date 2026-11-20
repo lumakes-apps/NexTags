@@ -126,7 +126,7 @@ try:
         expect(editor).to_have_value('失敗時保留的草稿')
         assert state['revision'] == 3
         page.once('dialog', lambda dialog: dialog.dismiss())
-        page.get_by_role('link', name='音樂管理系統').click()
+        page.get_by_role('link', name='NexTags').click()
         expect(editor).to_have_value('失敗時保留的草稿')
         assert '/settings' in page.url
         page.get_by_role('tab', name='支援的標籤').click()

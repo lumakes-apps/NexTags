@@ -368,7 +368,7 @@ export default function Settings() {
         <Tabs value={activeTab} onValueChange={selectTab} orientation="vertical"
           className="grid gap-6 grid-cols-[minmax(0,1fr)] md:grid-cols-[13rem_minmax(0,1fr)] items-start">
           <TabsList aria-label="設定項目"
-            className="flex md:flex-col h-auto w-full items-stretch justify-start gap-1 rounded-xl border bg-white p-2 overflow-x-auto relative md:sticky md:top-4">
+            className="flex md:flex-col h-auto w-full items-stretch justify-start gap-1 rounded-xl border bg-white p-2 overflow-x-auto relative md:sticky md:top-20">
             <TabsTrigger value="tags" className="w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-gray-100 data-[state=active]:shadow-none"><Tag className='size-4' />支援的標籤</TabsTrigger>
             <TabsTrigger value="languages" className="w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-gray-100 data-[state=active]:shadow-none"><Languages className='size-4' />支援的語言</TabsTrigger>
             <TabsTrigger value="folders" className="w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-gray-100 data-[state=active]:shadow-none"><FolderInput className='size-4' />允許的資料夾</TabsTrigger>
