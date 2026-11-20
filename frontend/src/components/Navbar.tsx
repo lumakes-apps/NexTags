@@ -1,63 +1,49 @@
-import { Disc2, ListMinus, ListMusic, Music, ServerCrash, Settings2 } from 'lucide-react';
+import { Disc2, ListMusic, ServerCrash, Settings2, Tags } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 
+const LINKS = [
+  { to: '/', label: '歌曲管理', icon: Disc2 },
+  { to: '/playlists', label: '播放清單', icon: ListMusic },
+  { to: '/cache', label: '快取管理', icon: ServerCrash },
+  { to: '/settings', label: '系統設定', icon: Settings2 },
+];
+
 export default function Navbar() {
-  const location = useLocation();
-  const pathname = location.pathname;
+  const { pathname } = useLocation();
 
   return (
-    <nav className="bg-white shadow-sm border-b">
-      <div className="mx-auto px-4 py-3">
-        <div className="flex gap-2 justify-between">
-          <div className="flex-shrink-0 flex items-center">
-            <Link to="/" className="flex items-center gap-2">
-              <h1 className="text-xl font-bold text-gray-900">音樂管理系統</h1>
-            </Link>
-          </div>
-          <div className="flex items-center">
-            <Link
-              to="/"
-              className={`flex px-4 py-2 gap-2 rounded-full text-sm font-medium transition-colors ${pathname === '/'
-                ? 'bg-foreground text-background'
-                : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
-                }`}
-            >
-              <Disc2 className="w-5 h-5" />
-              {pathname === '/' && '歌曲管理'}
-            </Link>
-            <Link
-              to="/playlists"
-              className={`flex px-4 py-2 gap-2 rounded-full text-sm font-medium transition-colors ${pathname === '/playlists'
-                ? 'bg-foreground text-background'
-                : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
-                }`}
-            >
-              <ListMusic className="w-5 h-5" />
-              {pathname === '/playlists' && '播放清單'}
-            </Link>
-            <Link
-              to="/cache"
-              className={`flex px-4 py-2 gap-2 rounded-full text-sm font-medium transition-colors ${pathname === '/cache'
-                ? 'bg-foreground text-background'
-                : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
-                }`}
-            >
-              <ServerCrash className="w-5 h-5" />
-              {pathname === '/cache' && '快取管理'}
-            </Link>
-            <Link
-              to="/settings"
-              className={`flex px-4 py-2 gap-2 rounded-full text-sm font-medium transition-colors ${pathname === '/settings'
-                ? 'bg-foreground text-background'
-                : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
-                }`}
-            >
-              <Settings2 className="w-5 h-5" />
-              {pathname === '/settings' && '系統設定'}
-            </Link>
-          </div>
-        </div>
+    // 固定在頂端；z-40 低於對話框（z-50），開啟對話框時仍會被遮住
+    <header className="sticky top-0 z-40 border-b bg-white/90 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-white/75">
+      <div className="mx-auto flex h-16 items-center justify-between gap-2 px-4">
+        <Link to="/" className="flex shrink-0 items-center gap-2 rounded-lg">
+          <span aria-hidden="true" className="flex size-8 items-center justify-center rounded-lg bg-foreground text-background">
+            <Tags className="size-[18px]" strokeWidth={2.25} />
+          </span>
+          <span className="text-xl font-bold tracking-tight text-gray-900">NexTags</span>
+        </Link>
+        <nav aria-label="主要功能" className="flex items-center">
+          {LINKS.map(({ to, label, icon: Icon }) => {
+            const active = pathname === to;
+            return (
+              <Link
+                key={to}
+                to={to}
+                aria-label={label}
+                aria-current={active ? 'page' : undefined}
+                title={label}
+                className={`flex shrink-0 gap-2 whitespace-nowrap rounded-full px-3 py-2 text-sm font-medium transition-colors sm:px-4 ${active
+                  ? 'bg-foreground text-background'
+                  : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+                  }`}
+              >
+                <Icon className="size-5" aria-hidden="true" />
+                {/* 窄螢幕只顯示圖示（名稱由 aria-label 提供），避免文字被擠成直排 */}
+                {active && <span className="hidden sm:inline">{label}</span>}
+              </Link>
+            );
+          })}
+        </nav>
       </div>
-    </nav>
+    </header>
   );
 }
