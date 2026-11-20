@@ -1,4 +1,5 @@
 import functools
+import re
 import json
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -54,8 +55,13 @@ def api(route):
     elif path == '/api/config' and request.method == 'GET':
         result = {'success': True, 'data': config}
     elif path == '/api/integrations' and request.method == 'GET':
-        # 設定頁的左側導覽會列出整合；本測試不涉及整合，回傳空清單
-        result = []
+        # 提示詞放在「整合 › AI 歌詞整理」底下
+        result = [{
+            'key': 'ai_lyrics', 'name': 'AI 歌詞整理', 'description': 'AI', 'enabled': True, 'available': True,
+            'fields': [{'name': 'api_key', 'label': 'Anthropic API 金鑰', 'kind': 'secret', 'default': None,
+                        'help': '', 'options': [], 'group': '金鑰'}],
+            'settings': {}, 'secrets': {'api_key': 'database'}, 'master_key_configured': True, 'status': {},
+        }]
     else:
         raise AssertionError(f'Unexpected API request: {request.method} {path}')
     route.fulfill(status=status, content_type='application/json', body=json.dumps(result))
@@ -75,7 +81,11 @@ try:
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.route('**/api/**', api)
+        # 舊連結 ?tab=prompts 轉到 AI 歌詞整理
         page.goto(f'http://127.0.0.1:{server.server_port}/settings?tab=prompts')
+        expect(page.get_by_test_id('integration-ai_lyrics')).to_be_visible()
+        expect(page).to_have_url(re.compile(r'tab=integrations&integration=ai_lyrics'))
+        expect(page.get_by_role('tab', name='提示詞管理')).to_have_count(0)
         editor = page.get_by_label('提示詞', exact=True)
         expect(editor).to_have_value(DEFAULT)
         expect(page.get_by_role('button', name='儲存提示詞', exact=True)).to_be_disabled()
@@ -85,7 +95,7 @@ try:
         expect(page.get_by_text('[00:01.12]測試整理結果', exact=True)).to_be_visible()
         assert state['revision'] == 1 and state['text'] == DEFAULT
         page.get_by_role('tab', name='支援的標籤').click()
-        page.get_by_role('tab', name='提示詞管理').click()
+        page.get_by_role('tab', name='AI 歌詞整理').click()
         expect(editor).to_have_value('未儲存測試草稿\n')
         state.update(text='其他頁面儲存內容', revision=2)
         page.get_by_role('button', name='儲存提示詞', exact=True).click()
@@ -119,8 +129,11 @@ try:
         page.get_by_role('link', name='音樂管理系統').click()
         expect(editor).to_have_value('失敗時保留的草稿')
         assert '/settings' in page.url
+        page.get_by_role('tab', name='支援的標籤').click()
         import_file(page, {**config, 'ai_lyrics_prompt': '匯入提示詞\n'})
         expect(editor).to_have_value('匯入提示詞\n')
+        expect(editor).to_be_visible()  # 匯入後切到 AI 歌詞整理
+        expect(page).to_have_url(re.compile(r'integration=ai_lyrics'))
         assert state['revision'] == 3
         page.get_by_role('button', name='儲存提示詞', exact=True).click()
         expect(page.get_by_role('button', name='儲存提示詞', exact=True)).to_be_disabled()

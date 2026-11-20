@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useBlocker, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
-import { FolderInput, Languages, Tag, Trash2, Download, Upload, Settings as SettingsIcon, GripVertical, MessageSquareText, Plug, ChevronDown } from 'lucide-react';
+import { FolderInput, Languages, Tag, Trash2, Download, Upload, Settings as SettingsIcon, GripVertical, Plug, ChevronDown } from 'lucide-react';
 import PromptManager from '@/components/settings/PromptManager';
 import { IntegrationDetail, IntegrationsOverview } from '@/components/settings/IntegrationsPanel';
 import { fetchIntegrations, type Integration } from '@/lib/integrations';
@@ -81,14 +81,18 @@ interface Config {
   allow_folders: string[];
 }
 
+const AI_LYRICS_TAB = 'integration:ai_lyrics';
+
 export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams();
-  // 左側導覽的目前項目：一般設定、提示詞、整合總覽，或某個整合（integration:<key>）
+  // 左側導覽的目前項目：一般設定、整合總覽，或某個整合（integration:<key>）
   const [activeTab, setActiveTab] = useState(() => {
     const tab = searchParams.get('tab') ?? '';
     const integration = searchParams.get('integration');
     if (tab === 'integrations' && integration) return `integration:${integration}`;
-    return ['tags', 'languages', 'folders', 'prompts', 'integrations'].includes(tab) ? tab : 'tags';
+    // 提示詞已併入 AI 歌詞整理；舊的 ?tab=prompts 連結轉過去
+    if (tab === 'prompts') return AI_LYRICS_TAB;
+    return ['tags', 'languages', 'folders', 'integrations'].includes(tab) ? tab : 'tags';
   });
   const [integrations, setIntegrations] = useState<Integration[] | null>(null);
   const [integrationsError, setIntegrationsError] = useState('');
@@ -102,11 +106,15 @@ export default function Settings() {
   useEffect(loadIntegrations, [loadIntegrations]);
 
   // 讓目前位置反映在網址上，重新整理或分享連結時回到同一頁
-  const selectTab = (tab: string) => {
+  const selectTab = useCallback((tab: string) => {
     setActiveTab(tab);
     const [section, key] = tab.split(':');
     setSearchParams(key ? { tab: 'integrations', integration: key } : { tab: section }, { replace: true });
-  };
+  }, [setSearchParams]);
+  useEffect(() => {
+    if (searchParams.get('tab') === 'prompts') selectTab(AI_LYRICS_TAB);
+  }, [searchParams, selectTab]);
+  const aiLyrics = integrations?.find(integration => integration.key === 'ai_lyrics');
   const [prompt, setPrompt] = useState<LyricsPrompt | null>(null);
   const [promptDraft, setPromptDraft] = useState('');
   const [promptLoading, setPromptLoading] = useState(true);
@@ -296,7 +304,8 @@ export default function Settings() {
 
         if (importedConfig.ai_lyrics_prompt !== undefined) {
           setPromptDraft(importedConfig.ai_lyrics_prompt);
-          setActiveTab('prompts');
+          setIntegrationsOpen(true);
+          selectTab(AI_LYRICS_TAB);
           toast.success('設定已載入草稿。提示詞請按「儲存提示詞」；其他設定請切換分頁儲存。');
         } else {
           toast.success('設定已匯入，請點擊「儲存設定」以套用');
@@ -357,13 +366,12 @@ export default function Settings() {
         </div>
 
         <Tabs value={activeTab} onValueChange={selectTab} orientation="vertical"
-          className="grid gap-6 md:grid-cols-[13rem_minmax(0,1fr)] items-start">
+          className="grid gap-6 grid-cols-[minmax(0,1fr)] md:grid-cols-[13rem_minmax(0,1fr)] items-start">
           <TabsList aria-label="設定項目"
-            className="flex md:flex-col h-auto w-full items-stretch justify-start gap-1 rounded-xl border bg-white p-2 overflow-x-auto md:sticky md:top-4">
+            className="flex md:flex-col h-auto w-full items-stretch justify-start gap-1 rounded-xl border bg-white p-2 overflow-x-auto relative md:sticky md:top-4">
             <TabsTrigger value="tags" className="w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-gray-100 data-[state=active]:shadow-none"><Tag className='size-4' />支援的標籤</TabsTrigger>
             <TabsTrigger value="languages" className="w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-gray-100 data-[state=active]:shadow-none"><Languages className='size-4' />支援的語言</TabsTrigger>
             <TabsTrigger value="folders" className="w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-gray-100 data-[state=active]:shadow-none"><FolderInput className='size-4' />允許的資料夾</TabsTrigger>
-            <TabsTrigger value="prompts" className="w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-gray-100 data-[state=active]:shadow-none"><MessageSquareText className='size-4' />提示詞管理</TabsTrigger>
             <div className="flex items-center gap-1 md:mt-2 md:border-t md:pt-2">
               <TabsTrigger value="integrations" className="w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-gray-100 data-[state=active]:shadow-none"><Plug className='size-4' />整合</TabsTrigger>
               <button type="button" onClick={() => setIntegrationsOpen(open => !open)}
@@ -393,13 +401,17 @@ export default function Settings() {
                 onOpen={key => { setIntegrationsOpen(true); selectTab(`integration:${key}`); }} />
             )}
           </TabsContent>
-          {integrations?.map(integration => (
+          {integrations?.filter(integration => integration.key !== 'ai_lyrics').map(integration => (
             <TabsContent key={integration.key} value={`integration:${integration.key}`} className="mt-0">
               <IntegrationDetail integration={integration} onChanged={loadIntegrations} />
             </TabsContent>
           ))}
-          <TabsContent value="prompts" forceMount className="mt-0 data-[state=inactive]:hidden">
+          {/* AI 歌詞整理含提示詞編輯：一直掛載，切到別頁再回來時試跑的歌詞與結果還在；
+              整合清單載入失敗時仍可編輯提示詞 */}
+          <TabsContent value={AI_LYRICS_TAB} forceMount className="mt-0 space-y-4 data-[state=inactive]:hidden">
+            {aiLyrics && <IntegrationDetail integration={aiLyrics} onChanged={loadIntegrations} />}
             <PromptManager
+              previewBlockedReason={!aiLyrics ? '' : !aiLyrics.enabled ? '啟用 AI 歌詞整理後才能試跑' : !aiLyrics.available ? '設定 Anthropic API 金鑰後才能試跑' : ''}
               prompt={prompt}
               draft={promptDraft}
               loading={promptLoading}
