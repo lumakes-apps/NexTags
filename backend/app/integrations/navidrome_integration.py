@@ -26,7 +26,7 @@ FAV_INITIALIZED = 'favsync:initialized'
 FAV_STATUS = 'favsync:status'
 FAV_DIRTY = 'favsync:dirty'
 FAV_LOCK = 'favsync:lock'
-STRATEGIES = {'union', 'local', 'remote'}
+SYNC_MODES = [['two_way', '雙向：哪一邊改了就以哪一邊為準'], ['local', '以 NexTags 為準'], ['remote', '以 Navidrome 為準']]
 
 
 class NavidromeError(RuntimeError):
@@ -103,19 +103,24 @@ def is_favorite(tags: Dict[str, Any]) -> bool:
 
 
 def plan_sync(local: Set[str], remote: Set[str], universe: Set[str],
-              snapshot: Optional[Set[str]], strategy: str = 'union') -> Dict[str, Set[str]]:
-    """三方比對：與上次同步結果相比，哪一邊改了就以哪一邊為準。
+              snapshot: Optional[Set[str]], mode: str = 'two_way') -> Dict[str, Set[str]]:
+    """依同步方式計算兩邊要做的變更。只處理雙方都有的歌曲（universe）。
 
-    snapshot 為 None 代表尚未同步過，依 strategy 決定：union 兩邊任一為最愛即為最愛，
-    local 以 NexTags 為準，remote 以 Navidrome 為準。只處理雙方都有的歌曲（universe）。
+    - two_way：與上次同步結果（snapshot）比對，哪一邊改了就以哪一邊為準；
+      尚未同步過（snapshot 為 None）時，任一邊是最愛就設為最愛。
+    - local：一律以 NexTags 為準；remote：一律以 Navidrome 為準（另一邊的修改會被蓋掉）。
     """
     plan = {'star': set(), 'unstar': set(), 'favorite': set(), 'unfavorite': set(), 'final': set()}
     for path in universe:
         in_local, in_remote = path in local, path in remote
         if in_local == in_remote:
             final = in_local
+        elif mode == 'local':
+            final = in_local
+        elif mode == 'remote':
+            final = in_remote
         elif snapshot is None:
-            final = {'union': True, 'local': in_local, 'remote': in_remote}[strategy]
+            final = True
         else:
             # 布林值只有兩種：兩邊不同時，恰有一邊與上次結果相同，另一邊就是這次改的
             final = in_local if in_remote == (path in snapshot) else in_remote
@@ -136,14 +141,17 @@ class NavidromeIntegration(Integration):
             description='匯入、封面、播放清單與檔案移動後通知 Navidrome 重新掃描；檔案移動等掃描完成再進行以保留播放紀錄；可與 Navidrome 同步最愛。',
             enabled_by_default=True,  # 維持既有部署的行為
             fields=[
-                Field('refresh_hook', '變更後通知主機 refresh hook 重新掃描', 'bool', True),
+                Field('base_url', 'Navidrome 網址', 'url', '', '例如 http://navidrome:4533', group='連線'),
+                Field('username', '帳號', 'text', '', group='連線'),
+                Field('password', '密碼', 'secret', group='連線'),
+                Field('refresh_hook', '變更後通知主機 refresh hook 重新掃描', 'bool', True, group='掃描通知'),
                 Field('wait_for_scan', '移動檔案前等待 Navidrome 掃描（保留播放紀錄）', 'bool', True,
-                      '需安裝 deploy/navidrome-refresh-hook；未安裝時請關閉，否則檔案會一直等待移動'),
-                Field('base_url', 'Navidrome 網址', 'url', '', '例如 http://navidrome:4533，最愛同步需要'),
-                Field('username', '帳號', 'text', ''),
-                Field('password', '密碼', 'secret'),
-                Field('favorites_sync', '同步最愛（NexTags FAVORITE 標籤 ↔ Navidrome 喜愛）', 'bool', False),
-                Field('sync_interval_minutes', '定期同步間隔（分鐘）', 'number', 15),
+                      '需安裝 deploy/navidrome-refresh-hook；未安裝時請關閉，否則檔案會一直等待移動', group='掃描通知'),
+                Field('sync_mode', '同步方式', 'select', 'two_way',
+                      '切換後需重新預覽並確認一次，之後才會恢復自動同步', options=SYNC_MODES, group='最愛同步'),
+                Field('favorites_sync', '自動同步（定期與存檔後）', 'bool', False,
+                      '關閉時仍可隨時手動預覽與同步', group='最愛同步'),
+                Field('sync_interval_minutes', '自動同步間隔（分鐘）', 'number', 15, group='最愛同步'),
             ],
         )
 
@@ -213,17 +221,24 @@ class NavidromeIntegration(Integration):
             'local_only_songs': len(local_paths - set(ids)),
         }
 
-    def preview(self, strategy: str = 'union') -> Dict[str, Any]:
-        if strategy not in STRATEGIES:
-            raise ValueError('未知的同步方式')
+    def save(self, enabled=None, settings=None, secrets=None) -> None:
+        previous = self.settings().get('sync_mode')
+        super().save(enabled, settings, secrets)
+        if settings and 'sync_mode' in settings and settings['sync_mode'] != previous and _redis_available():
+            # 切換同步方式可能一次改寫大量歌曲：暫停自動同步，直到重新預覽並手動確認
+            _redis().delete(FAV_INITIALIZED, FAV_SNAPSHOT)
+
+    def preview(self) -> Dict[str, Any]:
+        mode = self.settings()['sync_mode']
         client = self.client()
         try:
             data = self._gather(client)
         finally:
             client.close()
         snapshot = self._snapshot()
-        plan = plan_sync(data['local'], data['remote'], data['universe'], snapshot, strategy)
+        plan = plan_sync(data['local'], data['remote'], data['universe'], snapshot, mode)
         return {
+            'mode': mode,
             'initialized': snapshot is not None,
             'matched_songs': len(data['universe']),
             'local_favorites': len(data['local']),
@@ -241,8 +256,8 @@ class NavidromeIntegration(Integration):
         client = _redis()
         return set(client.smembers(FAV_SNAPSHOT)) if client.exists(FAV_INITIALIZED) else None
 
-    def sync(self, strategy: Optional[str] = None) -> Dict[str, Any]:
-        """執行同步。尚未同步過時必須指定 strategy（初次同步方式）。"""
+    def sync(self, confirm: bool = False) -> Dict[str, Any]:
+        """執行同步。尚未確認過（初次同步或剛切換同步方式）時需 confirm=True，避免未預覽就大量改寫。"""
         from app.dependencies.mp3tag_writer import write_tags
         from app.dependencies.redis_cache import redis_cache
         redis_client = _redis()
@@ -251,12 +266,13 @@ class NavidromeIntegration(Integration):
         started = datetime.now(timezone.utc).isoformat()
         try:
             snapshot = self._snapshot()
-            if snapshot is None and strategy not in STRATEGIES:
-                raise NavidromeError('尚未同步過，請先選擇初次同步方式')
+            mode = self.settings()['sync_mode']
+            if snapshot is None and not confirm:
+                raise NavidromeError('尚未確認同步：請先預覽差異，再手動開始同步')
             client = self.client()
             try:
                 data = self._gather(client)
-                plan = plan_sync(data['local'], data['remote'], data['universe'], snapshot, strategy or 'union')
+                plan = plan_sync(data['local'], data['remote'], data['universe'], snapshot, mode)
                 final = set(plan['final'])
                 errors: List[str] = []
                 for starred, key in ((True, 'star'), (False, 'unstar')):
@@ -283,7 +299,7 @@ class NavidromeIntegration(Integration):
             pipe.delete(FAV_DIRTY)
             pipe.execute()
             result = {'ok': not errors, 'started_at': started, 'finished_at': datetime.now(timezone.utc).isoformat(),
-                      'strategy': strategy if snapshot is None else 'incremental',
+                      'mode': mode, 'first_run': snapshot is None,
                       'applied': {key: len(value) for key, value in plan.items() if key != 'final'},
                       'errors': errors[:20]}
         except Exception as error:

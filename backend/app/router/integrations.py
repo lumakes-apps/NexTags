@@ -20,7 +20,8 @@ class IntegrationUpdate(BaseModel):
 
 
 class SyncRequest(BaseModel):
-    strategy: Optional[str] = None
+    # 初次同步或剛切換同步方式後，需在預覽後明確確認
+    confirm: bool = False
 
 
 def _get(key: str):
@@ -57,14 +58,14 @@ async def test_integration(key: str):
 
 
 @router.post("/navidrome/favorites/preview")
-async def preview_favorites_sync(request: SyncRequest):
-    """比較兩邊的最愛，列出差異與同步後會做的變更（不做任何修改）"""
-    return await _run(navidrome.preview, request.strategy or 'union')
+async def preview_favorites_sync():
+    """依目前的同步方式比較兩邊的最愛，列出差異與同步後會做的變更（不做任何修改）"""
+    return await _run(navidrome.preview)
 
 
 @router.post("/navidrome/favorites/sync")
 async def run_favorites_sync(request: SyncRequest):
-    """立即同步最愛；尚未同步過時必須指定初次同步方式（union / local / remote）"""
+    """立即同步最愛；尚未確認過（初次或剛切換同步方式）時需 confirm=true"""
     if not navidrome.is_enabled():
         raise HTTPException(status_code=400, detail="Navidrome 整合未啟用")
-    return await _run(navidrome.sync, request.strategy)
+    return await _run(navidrome.sync, request.confirm)

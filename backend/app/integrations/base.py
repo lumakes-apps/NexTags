@@ -14,9 +14,13 @@ from app.services import secret_store
 class Field:
     name: str
     label: str
-    kind: str  # text | url | number | bool | secret
+    kind: str  # text | url | number | bool | select | secret
     default: Any = None
     help: str = ''
+    # select 的選項：[[值, 顯示文字], ...]
+    options: List[List[str]] = field(default_factory=list)
+    # 設定頁中的區塊名稱，同區塊的欄位放在一起
+    group: str = '設定'
 
 
 @dataclass
@@ -66,6 +70,8 @@ class Integration:
         for name, value in (settings or {}).items():
             if name not in known or known[name].kind == 'secret':
                 raise ValueError(f'未知的設定欄位：{name}')
+            if known[name].kind == 'select' and value not in [option[0] for option in known[name].options]:
+                raise ValueError(f'{known[name].label} 的值無效：{value}')
             merged[name] = value
         set_config(self.config_key, {
             'enabled': stored.get('enabled', self.enabled_by_default) if enabled is None else bool(enabled),
