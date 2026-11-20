@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useBlocker, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
-import { FolderInput, Languages, Tag, Trash2, Download, Upload, Settings as SettingsIcon, GripVertical } from 'lucide-react';
+import { FolderInput, Languages, Tag, Trash2, Download, Upload, Settings as SettingsIcon, GripVertical, MessageSquareText } from 'lucide-react';
+import PromptManager from '@/components/settings/PromptManager';
+import { MAX_PROMPT_LENGTH, promptErrorMessage, type LyricsPrompt } from '@/lib/prompts';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
@@ -78,7 +80,14 @@ interface Config {
 }
 
 export default function Settings() {
-  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState(searchParams.get('tab') === 'prompts' ? 'prompts' : 'tags');
+  const [prompt, setPrompt] = useState<LyricsPrompt | null>(null);
+  const [promptDraft, setPromptDraft] = useState('');
+  const [promptLoading, setPromptLoading] = useState(true);
+  const [promptLoadError, setPromptLoadError] = useState('');
+  const promptDirty = prompt !== null && promptDraft !== prompt.text;
+  const blocker = useBlocker(({ currentLocation, nextLocation }) => promptDirty && currentLocation.pathname !== nextLocation.pathname);
   const [config, setConfig] = useState<Config | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -112,7 +121,38 @@ export default function Settings() {
 
   useEffect(() => {
     fetchConfig();
+    fetchPrompt();
   }, []);
+
+  useEffect(() => {
+    if (!promptDirty) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
+  }, [promptDirty]);
+
+  useEffect(() => {
+    if (blocker.state !== 'blocked') return;
+    if (window.confirm('提示詞尚未儲存，確定要離開並捨棄修改？')) blocker.proceed();
+    else blocker.reset();
+  }, [blocker]);
+
+  const fetchPrompt = async (preserveDraft = false) => {
+    setPromptLoading(true);
+    setPromptLoadError('');
+    try {
+      const loaded: LyricsPrompt = await api.get('prompts/lyrics');
+      setPrompt(loaded);
+      if (!preserveDraft || !prompt) setPromptDraft(loaded.text);
+    } catch (error) {
+      setPromptLoadError(promptErrorMessage(error, '載入提示詞失敗，請重試'));
+    } finally {
+      setPromptLoading(false);
+    }
+  };
 
   const fetchConfig = async () => {
     try {
@@ -178,8 +218,9 @@ export default function Settings() {
         supported_tags: editingTags,
         supported_languages: editingLanguages,
         allow_folders: editingFolders,
+        ...(prompt ? { ai_lyrics_prompt: promptDraft } : {}),
         export_date: new Date().toISOString(),
-        version: '1.0'
+        version: '1.1'
       };
 
       const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
@@ -215,12 +256,26 @@ export default function Settings() {
           return;
         }
 
+        if (importedConfig.ai_lyrics_prompt !== undefined && (
+          !prompt || typeof importedConfig.ai_lyrics_prompt !== 'string' ||
+          !importedConfig.ai_lyrics_prompt.trim() || importedConfig.ai_lyrics_prompt.length > MAX_PROMPT_LENGTH
+        )) {
+          toast.error('提示詞尚未載入或匯入的提示詞格式不正確，請確認後重試');
+          return;
+        }
+
         // 應用匯入的設定
         setEditingTags(importedConfig.supported_tags);
         setEditingLanguages(importedConfig.supported_languages);
         setEditingFolders(importedConfig.allow_folders);
 
-        toast.success('設定已匯入，請點擊「儲存設定」以套用');
+        if (importedConfig.ai_lyrics_prompt !== undefined) {
+          setPromptDraft(importedConfig.ai_lyrics_prompt);
+          setActiveTab('prompts');
+          toast.success('設定已載入草稿。提示詞請按「儲存提示詞」；其他設定請切換分頁儲存。');
+        } else {
+          toast.success('設定已匯入，請點擊「儲存設定」以套用');
+        }
       } catch (error) {
         console.error('Failed to import config:', error);
         toast.error('匯入設定失敗，請確認檔案格式正確');
@@ -276,12 +331,27 @@ export default function Settings() {
           </div>
         </div>
 
-        <Tabs defaultValue="tags">
-          <TabsList className='grid grid-cols-3 mb-4'>
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList className='grid grid-cols-2 sm:grid-cols-4 h-auto gap-1 mb-4'>
             <TabsTrigger value="tags"><Tag className='size-4 me-2' />支援的標籤</TabsTrigger>
             <TabsTrigger value="languages"><Languages className='size-4 me-2' />支援的語言</TabsTrigger>
             <TabsTrigger value="folders"><FolderInput className='size-4 me-2' />允許的資料夾</TabsTrigger>
+            <TabsTrigger value="prompts"><MessageSquareText className='size-4 me-2' />提示詞管理</TabsTrigger>
           </TabsList>
+          <TabsContent value="prompts" forceMount className="data-[state=inactive]:hidden">
+            <PromptManager
+              prompt={prompt}
+              draft={promptDraft}
+              loading={promptLoading}
+              loadError={promptLoadError}
+              onDraftChange={setPromptDraft}
+              onSaved={(saved, submittedText) => {
+                setPrompt(saved);
+                setPromptDraft((current) => current === submittedText ? saved.text : current);
+              }}
+              onReload={() => fetchPrompt(true)}
+            />
+          </TabsContent>
           <TabsContent value="tags">
             {/* 支援的標籤 */}
             <div className="bg-white rounded-lg shadow p-6 mb-6">
@@ -472,7 +542,7 @@ export default function Settings() {
 
 
         {/* 儲存按鈕 */}
-        <div className="flex justify-end gap-4">
+        <div className={`flex justify-end gap-4 ${activeTab === 'prompts' ? 'hidden' : ''}`}>
           <Button
             variant="outline"
             onClick={() => {

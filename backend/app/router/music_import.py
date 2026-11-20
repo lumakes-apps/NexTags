@@ -2,6 +2,7 @@ import os
 import uuid
 import shutil
 import asyncio
+import json
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
 from pathlib import Path
@@ -11,6 +12,7 @@ from fastapi.responses import FileResponse
 
 from app.schemas.music_import import (
     FileUploadRequest, FileUploadResponse, ConvertFileRequest, ConvertFileResponse,
+    ChunkUploadInitRequest, ChunkUploadInitResponse, ChunkUploadCompleteRequest,
     ExtractTagsRequest, ExtractTagsResponse, UpdateTagsRequest, UpdateTagsResponse,
     CheckArtistRequest, CheckArtistResponse, ArtistCheckResult, UploadArtistImageRequest, UploadArtistImageResponse,
     ProcessAlbumRequest, ProcessAlbumResponse, FinalizeFileRequest, FinalizeFileResponse,
@@ -26,12 +28,17 @@ from app.dependencies.navidrome_hook import request_navidrome_refresh
 from app.dependencies.utils.audio_converter import convert_to_flac
 from app.dependencies.utils.cover_art import save_cover_art, extract_cover_from_audio
 from app.dependencies.utils.replaygain import generate_replaygain
+from app.dependencies.utils.path_sanitizer import sanitize_file_name, sanitize_folder_name
 from app.dependencies.logger import logger
 
 router = APIRouter(prefix="/music-import", tags=["music-import"])
 
 # 全局變數來追蹤匯入狀態
 import_sessions: Dict[str, Dict[str, Any]] = {}
+chunk_upload_sessions: Dict[str, Dict[str, Any]] = {}
+
+_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
+_CHUNK_UPLOAD_TTL = timedelta(hours=6)
 
 def get_music_base_path() -> str:
     """取得音樂根目錄路徑"""
@@ -42,6 +49,12 @@ def get_wait_import_path() -> str:
     wait_import_path = os.path.join(get_music_base_path(), 'WaitImport')
     os.makedirs(wait_import_path, exist_ok=True)
     return wait_import_path
+
+def get_chunk_upload_root_path() -> str:
+    """取得分片上傳暫存根目錄。"""
+    chunk_root = os.path.join(get_wait_import_path(), '.chunks')
+    os.makedirs(chunk_root, exist_ok=True)
+    return chunk_root
 
 def get_supported_formats() -> List[str]:
     """取得支援的音訊格式"""
@@ -54,6 +67,97 @@ def needs_conversion(file_extension: str) -> bool:
 def generate_file_id() -> str:
     """產生檔案追蹤ID"""
     return str(uuid.uuid4())
+
+def normalize_upload_filename(filename: str) -> str:
+    """移除瀏覽器可能送來的路徑片段，只保留檔名。"""
+    normalized = os.path.basename(filename.replace('\\', '/')).strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="檔案名稱不能為空")
+    return normalized
+
+def validate_music_filename(filename: str):
+    file_extension = os.path.splitext(filename)[1]
+    if file_extension.lower() not in get_supported_formats():
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支援的檔案格式: {file_extension}。支援格式: {', '.join(get_supported_formats())}"
+        )
+
+def validate_base_folder(base_folder: str):
+    from app.router.config import get_config
+    allow_folders = get_config('allow_folders') or []
+    if base_folder not in allow_folders:
+        raise HTTPException(status_code=400, detail=f"不支援的目標資料夾: {base_folder}")
+
+def validate_upload_id(upload_id: str) -> str:
+    try:
+        return str(uuid.UUID(upload_id))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="upload_id 格式不正確")
+
+def get_chunk_upload_dir(upload_id: str) -> str:
+    return os.path.join(get_chunk_upload_root_path(), validate_upload_id(upload_id))
+
+def get_chunk_metadata_path(upload_id: str) -> str:
+    return os.path.join(get_chunk_upload_dir(upload_id), 'metadata.json')
+
+def chunk_part_path(upload_id: str, chunk_index: int) -> str:
+    return os.path.join(get_chunk_upload_dir(upload_id), f"{chunk_index:06d}.part")
+
+def save_chunk_upload_session(upload_id: str, session: Dict[str, Any]):
+    session['updated_at'] = datetime.now().isoformat()
+    chunk_upload_sessions[upload_id] = session
+    upload_dir = get_chunk_upload_dir(upload_id)
+    os.makedirs(upload_dir, exist_ok=True)
+    with open(get_chunk_metadata_path(upload_id), 'w', encoding='utf-8') as metadata_file:
+        json.dump(session, metadata_file, ensure_ascii=False)
+
+def load_chunk_upload_session(upload_id: str) -> Dict[str, Any]:
+    upload_id = validate_upload_id(upload_id)
+    if upload_id in chunk_upload_sessions:
+        return chunk_upload_sessions[upload_id]
+
+    metadata_path = get_chunk_metadata_path(upload_id)
+    if not os.path.exists(metadata_path):
+        raise HTTPException(status_code=404, detail="找不到分片上傳任務")
+
+    try:
+        with open(metadata_path, 'r', encoding='utf-8') as metadata_file:
+            session = json.load(metadata_file)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"讀取分片上傳狀態失敗: {str(e)}")
+
+    chunk_upload_sessions[upload_id] = session
+    return session
+
+def cleanup_expired_chunk_uploads():
+    """清除過期且未完成的分片暫存，避免磁碟累積垃圾檔。"""
+    chunk_root = get_chunk_upload_root_path()
+    now = datetime.now()
+
+    for dirname in os.listdir(chunk_root):
+        upload_dir = os.path.join(chunk_root, dirname)
+        if not os.path.isdir(upload_dir):
+            continue
+
+        metadata_path = os.path.join(upload_dir, 'metadata.json')
+        updated_at = None
+        if os.path.exists(metadata_path):
+            try:
+                with open(metadata_path, 'r', encoding='utf-8') as metadata_file:
+                    metadata = json.load(metadata_file)
+                timestamp = metadata.get('updated_at') or metadata.get('created_at')
+                if timestamp:
+                    updated_at = datetime.fromisoformat(timestamp)
+            except Exception:
+                updated_at = None
+
+        if updated_at is None:
+            updated_at = datetime.fromtimestamp(os.path.getmtime(upload_dir))
+
+        if now - updated_at > _CHUNK_UPLOAD_TTL:
+            shutil.rmtree(upload_dir, ignore_errors=True)
+            chunk_upload_sessions.pop(dirname, None)
 
 def get_file_format(filename: str) -> AudioFormat:
     """根據檔案名稱判斷音訊格式"""
@@ -128,6 +232,212 @@ def update_import_status(file_id: str, status: ImportStatus, **kwargs):
     import_sessions[file_id]['updated_at'] = datetime.now()
 
     _cleanup_import_sessions()
+
+@router.post("/upload/init", response_model=ChunkUploadInitResponse)
+async def init_chunked_upload(request: ChunkUploadInitRequest):
+    """初始化分片上傳任務。"""
+    try:
+        cleanup_expired_chunk_uploads()
+
+        filename = normalize_upload_filename(request.filename)
+        validate_music_filename(filename)
+        validate_base_folder(request.base_folder)
+
+        if request.size <= 0:
+            raise HTTPException(status_code=400, detail="檔案大小必須大於 0")
+
+        upload_id = generate_file_id()
+        total_chunks = max(1, (request.size + _UPLOAD_CHUNK_SIZE - 1) // _UPLOAD_CHUNK_SIZE)
+        now = datetime.now().isoformat()
+        session = {
+            'upload_id': upload_id,
+            'filename': filename,
+            'size': request.size,
+            'base_folder': request.base_folder,
+            'chunk_size': _UPLOAD_CHUNK_SIZE,
+            'total_chunks': total_chunks,
+            'received_chunks': [],
+            'created_at': now,
+            'updated_at': now,
+        }
+        save_chunk_upload_session(upload_id, session)
+
+        logger.info(f"初始化分片上傳: {filename}, size={request.size}, chunks={total_chunks}")
+
+        return ChunkUploadInitResponse(
+            success=True,
+            message="分片上傳任務已建立",
+            upload_id=upload_id,
+            chunk_size=_UPLOAD_CHUNK_SIZE,
+            total_chunks=total_chunks,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"初始化分片上傳失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"初始化分片上傳失敗: {str(e)}")
+
+@router.post("/upload/chunk")
+async def upload_music_chunk(
+    upload_id: str = Form(...),
+    chunk_index: int = Form(...),
+    total_chunks: int = Form(...),
+    file: UploadFile = File(...)
+):
+    """接收單一音樂檔案分片。"""
+    try:
+        upload_id = validate_upload_id(upload_id)
+        session = load_chunk_upload_session(upload_id)
+        expected_total_chunks = int(session.get('total_chunks', 0))
+
+        if total_chunks != expected_total_chunks:
+            raise HTTPException(status_code=400, detail="分片總數與初始化資料不一致")
+        if chunk_index < 0 or chunk_index >= expected_total_chunks:
+            raise HTTPException(status_code=400, detail="分片索引超出範圍")
+
+        expected_size = min(
+            int(session['chunk_size']),
+            int(session['size']) - (chunk_index * int(session['chunk_size']))
+        )
+        if expected_size <= 0:
+            raise HTTPException(status_code=400, detail="分片大小不正確")
+
+        upload_dir = get_chunk_upload_dir(upload_id)
+        os.makedirs(upload_dir, exist_ok=True)
+        final_chunk_path = chunk_part_path(upload_id, chunk_index)
+        temp_chunk_path = final_chunk_path + '.tmp'
+
+        chunk_size = 0
+        with open(temp_chunk_path, 'wb') as buffer:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                buffer.write(chunk)
+                chunk_size += len(chunk)
+
+        if chunk_size != expected_size:
+            if os.path.exists(temp_chunk_path):
+                os.remove(temp_chunk_path)
+            raise HTTPException(
+                status_code=400,
+                detail=f"分片大小不一致: chunk={chunk_index}, expected={expected_size}, actual={chunk_size}"
+            )
+
+        os.replace(temp_chunk_path, final_chunk_path)
+
+        received_chunks = set(int(i) for i in session.get('received_chunks', []))
+        received_chunks.add(chunk_index)
+        session['received_chunks'] = sorted(received_chunks)
+        save_chunk_upload_session(upload_id, session)
+
+        logger.info(f"分片上傳成功: upload_id={upload_id}, chunk={chunk_index + 1}/{expected_total_chunks}")
+
+        return {
+            "success": True,
+            "message": "分片上傳成功",
+            "upload_id": upload_id,
+            "chunk_index": chunk_index,
+            "received_chunks": len(session['received_chunks']),
+            "total_chunks": expected_total_chunks,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"分片上傳失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"分片上傳失敗: {str(e)}")
+
+@router.post("/upload/complete", response_model=FileUploadResponse)
+async def complete_chunked_upload(request: ChunkUploadCompleteRequest):
+    """合併已上傳分片，並建立原本的音樂匯入 session。"""
+    try:
+        upload_id = validate_upload_id(request.upload_id)
+        session = load_chunk_upload_session(upload_id)
+        total_chunks = int(session['total_chunks'])
+
+        missing_chunks = [
+            i for i in range(total_chunks)
+            if not os.path.exists(chunk_part_path(upload_id, i))
+        ]
+        if missing_chunks:
+            raise HTTPException(
+                status_code=400,
+                detail=f"分片尚未完整上傳，缺少: {missing_chunks[:20]}"
+            )
+
+        filename = normalize_upload_filename(session['filename'])
+        validate_music_filename(filename)
+        validate_base_folder(session['base_folder'])
+
+        file_id = generate_file_id()
+        wait_import_path = get_wait_import_path()
+        temp_filename = f"{file_id}_{filename}"
+        temp_file_path = os.path.join(wait_import_path, temp_filename)
+        assembling_path = temp_file_path + '.assembling'
+
+        file_size = 0
+        try:
+            with open(assembling_path, 'wb') as output_file:
+                for chunk_index in range(total_chunks):
+                    current_part_path = chunk_part_path(upload_id, chunk_index)
+                    with open(current_part_path, 'rb') as input_file:
+                        while True:
+                            chunk = input_file.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            output_file.write(chunk)
+                            file_size += len(chunk)
+
+            if file_size != int(session['size']):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"合併後檔案大小不一致: expected={session['size']}, actual={file_size}"
+                )
+
+            os.replace(assembling_path, temp_file_path)
+        except Exception:
+            if os.path.exists(assembling_path):
+                os.remove(assembling_path)
+            raise
+
+        file_extension = os.path.splitext(filename)[1]
+        audio_format = get_file_format(filename)
+        needs_conv = needs_conversion(file_extension)
+
+        update_import_status(
+            file_id,
+            ImportStatus.UPLOADED,
+            original_filename=filename,
+            temp_path=temp_file_path,
+            base_folder=session['base_folder'],
+            format=audio_format.value,
+            needs_conversion=needs_conv,
+            file_size=file_size,
+            upload_id=upload_id,
+        )
+
+        shutil.rmtree(get_chunk_upload_dir(upload_id), ignore_errors=True)
+        chunk_upload_sessions.pop(upload_id, None)
+
+        logger.info(f"分片上傳合併成功: {filename} -> {temp_file_path}")
+
+        return FileUploadResponse(
+            success=True,
+            message="檔案上傳成功",
+            file_id=file_id,
+            original_filename=filename,
+            temp_path=temp_file_path,
+            format=audio_format,
+            needs_conversion=needs_conv
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"完成分片上傳失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"完成分片上傳失敗: {str(e)}")
 
 @router.post("/upload", response_model=FileUploadResponse)
 async def upload_music_file(
@@ -593,7 +903,8 @@ async def check_artist_folder(request: CheckArtistRequest):
         # 檢查每個歌手
         for artist_name in artist_names:
             # 建構歌手資料夾路徑 (/Music/basefolder/Music/Artist)
-            artist_folder_path = os.path.join(music_base_path, base_folder, "Music", artist_name)
+            artist_folder_name = sanitize_folder_name(artist_name)
+            artist_folder_path = os.path.join(music_base_path, base_folder, "Music", artist_folder_name)
             artist_exists = os.path.exists(artist_folder_path)
             needs_artist_image = False
 
@@ -697,7 +1008,8 @@ async def upload_artist_image(
         
         # 建立歌手資料夾 (/Music/basefolder/Music/Artist)
         music_base_path = get_music_base_path()
-        artist_folder_path = os.path.join(music_base_path, base_folder, "Music", artist_name)
+        artist_folder_name = sanitize_folder_name(artist_name)
+        artist_folder_path = os.path.join(music_base_path, base_folder, "Music", artist_folder_name)
         os.makedirs(artist_folder_path, exist_ok=True)
         
         # 儲存圖片為 artist.jpg
@@ -764,7 +1076,11 @@ def _process_album_folder_impl(request: ProcessAlbumRequest):
 
         # 建構專輯資料夾路徑 (使用主要歌手: /Music/basefolder/Music/PrimaryArtist/Album)
         music_base_path = get_music_base_path()
-        album_folder_path = os.path.join(music_base_path, base_folder, "Music", primary_artist, request.album_name)
+        primary_artist_folder = sanitize_folder_name(primary_artist)
+        album_folder_name = sanitize_folder_name(request.album_name)
+        album_folder_path = os.path.join(
+            music_base_path, base_folder, "Music", primary_artist_folder, album_folder_name
+        )
 
         # 建立主要歌手的專輯資料夾
         os.makedirs(album_folder_path, exist_ok=True)
@@ -772,7 +1088,8 @@ def _process_album_folder_impl(request: ProcessAlbumRequest):
         # 為多歌手創建各自的資料夾（如果不存在）
         created_artist_folders = []
         for artist_name in artist_names:
-            artist_folder_path = os.path.join(music_base_path, base_folder, "Music", artist_name)
+            artist_folder_name = sanitize_folder_name(artist_name)
+            artist_folder_path = os.path.join(music_base_path, base_folder, "Music", artist_folder_name)
             if not os.path.exists(artist_folder_path):
                 os.makedirs(artist_folder_path, exist_ok=True)
                 created_artist_folders.append(artist_name)
@@ -849,20 +1166,24 @@ async def finalize_file_preparation(request: FinalizeFileRequest):
         # 多歌手時使用第一個歌手作為主要路徑
         artist_names = [name.strip() for name in artist_name.split(';') if name.strip()]
         primary_artist = artist_names[0] if artist_names else artist_name
+        primary_artist_folder = sanitize_folder_name(primary_artist)
+        album_folder_name = sanitize_folder_name(album_name)
+        final_filename = sanitize_file_name(request.final_filename)
         music_base_path = get_music_base_path()
         preview_final_path = os.path.join(
-            music_base_path, base_folder, "Music", primary_artist, album_name, request.final_filename
+            music_base_path, base_folder, "Music", primary_artist_folder, album_folder_name,
+            final_filename
         )
         
         # 更新匯入狀態
         update_import_status(
             request.file_id,
             ImportStatus.READY_TO_MOVE,
-            final_filename=request.final_filename,
+            final_filename=final_filename,
             preview_final_path=preview_final_path
         )
         
-        logger.info(f"檔案已準備完成: {request.final_filename}")
+        logger.info(f"檔案已準備完成: {final_filename}")
         
         return FinalizeFileResponse(
             success=True,

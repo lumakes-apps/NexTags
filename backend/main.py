@@ -9,6 +9,8 @@ from app.router.cache import router as cache_router
 from app.router.music_import import router as music_import_router
 from app.router.tasks import router as tasks_router
 from app.router.config import router as config_router
+from app.router.prompts import router as prompts_router
+from app.services.prompt_service import initialize_lyrics_prompt
 from app.dependencies.logger import logger
 
 app = FastAPI(
@@ -51,9 +53,11 @@ app.include_router(cache_router, prefix="/api")
 app.include_router(music_import_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")
 app.include_router(config_router, prefix="/api")
+app.include_router(prompts_router, prefix="/api")
 
 @app.on_event("startup")
 async def startup_event():
+    initialize_lyrics_prompt()
     logger.info("=== NexTags API 啟動 ===")
     logger.info("API 版本: 0.1.0")
     

@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Dict, List, Any
 from app.dependencies.database import db
 from app.dependencies.logger import logger
+from app.services.prompt_service import PROMPT_KEY
 import json
 import time
 import threading
@@ -43,7 +44,7 @@ def get_config(config_key: str) -> Any:
     now = time.monotonic()
     with _config_cache_lock:
         entry = _config_cache.get(config_key)
-        if entry is not None and entry[1] > now:
+        if config_key != PROMPT_KEY and entry is not None and entry[1] > now:
             raw = entry[0]
             return json.loads(raw) if raw is not None else None
 
@@ -64,6 +65,7 @@ def get_config(config_key: str) -> Any:
 
 def set_config(config_key: str, config_value: Any, description: str = None):
     """設定或更新設定值"""
+    _check_writable_key(config_key)
     if db is None:
         raise HTTPException(status_code=500, detail="資料庫未初始化")
 
@@ -82,6 +84,11 @@ def set_config(config_key: str, config_value: Any, description: str = None):
         conn.commit()
 
     _config_cache_invalidate(config_key)
+
+
+def _check_writable_key(config_key: str):
+    if config_key == PROMPT_KEY:
+        raise HTTPException(status_code=422, detail="請透過提示詞管理儲存歌詞提示詞")
 
 
 @router.get("")
@@ -143,6 +150,8 @@ async def get_config_by_key(config_key: str):
 @router.put("/{config_key}")
 async def update_config(config_key: str, update: ConfigUpdate):
     """更新設定"""
+    _check_writable_key(config_key)
+    _check_writable_key(update.config_key)
     try:
         set_config(config_key, update.config_value, update.description)
 
@@ -164,6 +173,7 @@ async def update_config(config_key: str, update: ConfigUpdate):
 @router.post("/")
 async def create_or_update_config(update: ConfigUpdate):
     """建立或更新設定"""
+    _check_writable_key(update.config_key)
     try:
         set_config(update.config_key, update.config_value, update.description)
 
@@ -184,6 +194,7 @@ async def create_or_update_config(update: ConfigUpdate):
 @router.delete("/{config_key}")
 async def delete_config(config_key: str):
     """刪除設定"""
+    _check_writable_key(config_key)
     try:
         if db is None:
             raise HTTPException(status_code=500, detail="資料庫未初始化")
