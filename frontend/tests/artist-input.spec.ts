@@ -25,6 +25,10 @@ async function openEditor(page: Page, overrides: Record<string, string> = {}) {
             response = []
         } else if (endpoint === 'tags/artists') {
             response = directory
+        } else if (endpoint === 'audios/pending-moves') {
+            response = []
+        } else if (endpoint === 'audios/move-preview') {
+            response = { proposal: null }
         } else if (endpoint === 'tools/pinyin') {
             response = { result: `py-${route.request().postDataJSON().text}` }
         } else if (endpoint === 'audios/update') {
