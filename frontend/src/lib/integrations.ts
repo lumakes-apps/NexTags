@@ -3,16 +3,21 @@ import { useEffect, useState } from 'react'
 export interface IntegrationField {
   name: string
   label: string
-  kind: 'text' | 'url' | 'number' | 'bool' | 'secret'
+  kind: 'text' | 'url' | 'number' | 'bool' | 'select' | 'secret'
   default: unknown
   help: string
+  /** select 的選項：[值, 顯示文字] */
+  options: [string, string][]
+  /** 設定頁中的區塊名稱 */
+  group: string
 }
 
 export interface FavoritesSyncResult {
   ok: boolean
   started_at: string
   finished_at: string
-  strategy?: string
+  mode?: SyncMode
+  first_run?: boolean
   applied?: Record<'star' | 'unstar' | 'favorite' | 'unfavorite', number>
   errors?: string[]
   error?: string
@@ -37,6 +42,7 @@ export interface Integration {
 }
 
 export interface FavoritesPreview {
+  mode: SyncMode
   initialized: boolean
   matched_songs: number
   local_favorites: number
@@ -50,7 +56,7 @@ export interface FavoritesPreview {
   plan: Record<'star' | 'unstar' | 'favorite' | 'unfavorite', number>
 }
 
-export type SyncStrategy = 'union' | 'local' | 'remote'
+export type SyncMode = 'two_way' | 'local' | 'remote'
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init)
@@ -75,11 +81,12 @@ export const saveIntegration = (
 export const testIntegration = (key: string) =>
   request<{ ok: boolean; message: string }>(`/api/integrations/${key}/test`, { method: 'POST' })
 
-export const previewFavorites = (strategy: SyncStrategy) =>
-  request<FavoritesPreview>('/api/integrations/navidrome/favorites/preview', json('POST', { strategy }))
+export const previewFavorites = () =>
+  request<FavoritesPreview>('/api/integrations/navidrome/favorites/preview', { method: 'POST' })
 
-export const syncFavorites = (strategy?: SyncStrategy) =>
-  request<FavoritesSyncResult>('/api/integrations/navidrome/favorites/sync', json('POST', { strategy }))
+/** confirm：初次同步或剛切換同步方式後，預覽確認過才送出 */
+export const syncFavorites = (confirm = false) =>
+  request<FavoritesSyncResult>('/api/integrations/navidrome/favorites/sync', json('POST', { confirm }))
 
 /** 某個整合是否可用（已啟用且設定齊全）；載入中或失敗時視為不可用。 */
 export function useIntegrationAvailable(key: string): boolean {

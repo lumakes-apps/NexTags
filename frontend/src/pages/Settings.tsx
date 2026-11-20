@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useBlocker, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
-import { FolderInput, Languages, Tag, Trash2, Download, Upload, Settings as SettingsIcon, GripVertical, MessageSquareText, Plug } from 'lucide-react';
+import { FolderInput, Languages, Tag, Trash2, Download, Upload, Settings as SettingsIcon, GripVertical, MessageSquareText, Plug, ChevronDown } from 'lucide-react';
 import PromptManager from '@/components/settings/PromptManager';
-import IntegrationsPanel from '@/components/settings/IntegrationsPanel';
+import { IntegrationDetail, IntegrationsOverview } from '@/components/settings/IntegrationsPanel';
+import { fetchIntegrations, type Integration } from '@/lib/integrations';
 import { MAX_PROMPT_LENGTH, promptErrorMessage, type LyricsPrompt } from '@/lib/prompts';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -81,8 +82,31 @@ interface Config {
 }
 
 export default function Settings() {
-  const [searchParams] = useSearchParams();
-  const [activeTab, setActiveTab] = useState(['prompts', 'integrations'].includes(searchParams.get('tab') ?? '') ? searchParams.get('tab')! : 'tags');
+  const [searchParams, setSearchParams] = useSearchParams();
+  // 左側導覽的目前項目：一般設定、提示詞、整合總覽，或某個整合（integration:<key>）
+  const [activeTab, setActiveTab] = useState(() => {
+    const tab = searchParams.get('tab') ?? '';
+    const integration = searchParams.get('integration');
+    if (tab === 'integrations' && integration) return `integration:${integration}`;
+    return ['tags', 'languages', 'folders', 'prompts', 'integrations'].includes(tab) ? tab : 'tags';
+  });
+  const [integrations, setIntegrations] = useState<Integration[] | null>(null);
+  const [integrationsError, setIntegrationsError] = useState('');
+  const [integrationsOpen, setIntegrationsOpen] = useState(true);
+
+  const loadIntegrations = useCallback(() => {
+    fetchIntegrations()
+      .then(list => { setIntegrations(list); setIntegrationsError(''); })
+      .catch(error => setIntegrationsError(error instanceof Error ? error.message : '無法載入整合'));
+  }, []);
+  useEffect(loadIntegrations, [loadIntegrations]);
+
+  // 讓目前位置反映在網址上，重新整理或分享連結時回到同一頁
+  const selectTab = (tab: string) => {
+    setActiveTab(tab);
+    const [section, key] = tab.split(':');
+    setSearchParams(key ? { tab: 'integrations', integration: key } : { tab: section }, { replace: true });
+  };
   const [prompt, setPrompt] = useState<LyricsPrompt | null>(null);
   const [promptDraft, setPromptDraft] = useState('');
   const [promptLoading, setPromptLoading] = useState(true);
@@ -291,7 +315,7 @@ export default function Settings() {
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 p-8">
-        <div className="max-w-4xl mx-auto">
+        <div className="max-w-6xl mx-auto">
           <p className="text-gray-600">載入中...</p>
         </div>
       </div>
@@ -300,7 +324,7 @@ export default function Settings() {
 
   return (
     <div className="min-h-screen bg-gray-50 p-8">
-      <div className="max-w-4xl mx-auto">
+      <div className="max-w-6xl mx-auto">
         <div className="flex flex-col md:flex-row items-start gap-4 mt-4 mb-6 ">
           <h1 className="text-2xl font-bold text-gray-900">系統設定</h1>
           <div className="flex-1 flex gap-2 flex-wrap items-start justify-start md:justify-end">
@@ -332,18 +356,49 @@ export default function Settings() {
           </div>
         </div>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className='grid grid-cols-2 sm:grid-cols-5 h-auto gap-1 mb-4'>
-            <TabsTrigger value="tags"><Tag className='size-4 me-2' />支援的標籤</TabsTrigger>
-            <TabsTrigger value="languages"><Languages className='size-4 me-2' />支援的語言</TabsTrigger>
-            <TabsTrigger value="folders"><FolderInput className='size-4 me-2' />允許的資料夾</TabsTrigger>
-            <TabsTrigger value="prompts"><MessageSquareText className='size-4 me-2' />提示詞管理</TabsTrigger>
-            <TabsTrigger value="integrations"><Plug className='size-4 me-2' />整合</TabsTrigger>
+        <Tabs value={activeTab} onValueChange={selectTab} orientation="vertical"
+          className="grid gap-6 md:grid-cols-[13rem_minmax(0,1fr)] items-start">
+          <TabsList aria-label="設定項目"
+            className="flex md:flex-col h-auto w-full items-stretch justify-start gap-1 rounded-xl border bg-white p-2 overflow-x-auto md:sticky md:top-4">
+            <TabsTrigger value="tags" className="w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-gray-100 data-[state=active]:shadow-none"><Tag className='size-4' />支援的標籤</TabsTrigger>
+            <TabsTrigger value="languages" className="w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-gray-100 data-[state=active]:shadow-none"><Languages className='size-4' />支援的語言</TabsTrigger>
+            <TabsTrigger value="folders" className="w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-gray-100 data-[state=active]:shadow-none"><FolderInput className='size-4' />允許的資料夾</TabsTrigger>
+            <TabsTrigger value="prompts" className="w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-gray-100 data-[state=active]:shadow-none"><MessageSquareText className='size-4' />提示詞管理</TabsTrigger>
+            <div className="flex items-center gap-1 md:mt-2 md:border-t md:pt-2">
+              <TabsTrigger value="integrations" className="w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-gray-100 data-[state=active]:shadow-none"><Plug className='size-4' />整合</TabsTrigger>
+              <button type="button" onClick={() => setIntegrationsOpen(open => !open)}
+                aria-expanded={integrationsOpen} aria-controls="settings-integrations-nav"
+                aria-label={integrationsOpen ? '收合整合清單' : '展開整合清單'}
+                className="rounded-md p-2 text-gray-500 hover:bg-gray-100">
+                <ChevronDown className={`size-4 transition-transform ${integrationsOpen ? '' : '-rotate-90'}`} aria-hidden="true" />
+              </button>
+            </div>
+            {integrationsOpen && (
+              <div id="settings-integrations-nav" className="flex md:flex-col gap-1">
+                {integrations?.map(integration => (
+                  <TabsTrigger key={integration.key} value={`integration:${integration.key}`} className="w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-gray-100 data-[state=active]:shadow-none md:ps-9">
+                    <span aria-hidden="true"
+                      className={`size-2 shrink-0 rounded-full ${integration.enabled ? (integration.available ? 'bg-green-500' : 'bg-amber-500') : 'bg-gray-300'}`} />
+                    {integration.name}
+                    <span className="sr-only">{integration.enabled ? (integration.available ? '（已啟用）' : '（已啟用，設定未完成）') : '（已停用）'}</span>
+                  </TabsTrigger>
+                ))}
+              </div>
+            )}
           </TabsList>
-          <TabsContent value="integrations">
-            <IntegrationsPanel />
+          <TabsContent value="integrations" className="mt-0">
+            {integrationsError && <p role="alert" className="text-sm text-red-600">{integrationsError}</p>}
+            {integrations && (
+              <IntegrationsOverview integrations={integrations} onChanged={loadIntegrations}
+                onOpen={key => { setIntegrationsOpen(true); selectTab(`integration:${key}`); }} />
+            )}
           </TabsContent>
-          <TabsContent value="prompts" forceMount className="data-[state=inactive]:hidden">
+          {integrations?.map(integration => (
+            <TabsContent key={integration.key} value={`integration:${integration.key}`} className="mt-0">
+              <IntegrationDetail integration={integration} onChanged={loadIntegrations} />
+            </TabsContent>
+          ))}
+          <TabsContent value="prompts" forceMount className="mt-0 data-[state=inactive]:hidden">
             <PromptManager
               prompt={prompt}
               draft={promptDraft}
@@ -357,7 +412,7 @@ export default function Settings() {
               onReload={() => fetchPrompt(true)}
             />
           </TabsContent>
-          <TabsContent value="tags">
+          <TabsContent value="tags" className="mt-0">
             {/* 支援的標籤 */}
             <div className="bg-white rounded-lg shadow p-6 mb-6">
               <h2 className="flex gap-2 items-center text-xl font-semibold mb-4">
@@ -412,7 +467,7 @@ export default function Settings() {
               </div>
             </div>
           </TabsContent>
-          <TabsContent value="languages">
+          <TabsContent value="languages" className="mt-0">
             {/* 支援的語言 */}
             <div className="bg-white rounded-lg shadow p-6 mb-6">
               <h2 className="flex gap-2 items-center text-xl font-semibold mb-4">
@@ -485,7 +540,7 @@ export default function Settings() {
               </div>
             </div>
           </TabsContent>
-          <TabsContent value="folders">
+          <TabsContent value="folders" className="mt-0">
             {/* 允許的資料夾 */}
             <div className="bg-white rounded-lg shadow p-6 mb-6">
               <h2 className="flex gap-2 items-center text-xl font-semibold mb-4">
@@ -547,7 +602,8 @@ export default function Settings() {
 
 
         {/* 儲存按鈕 */}
-        <div className={`flex justify-end gap-4 ${activeTab === 'prompts' || activeTab === 'integrations' ? 'hidden' : ''}`}>
+        {/* 標籤、語言、資料夾三頁共用的儲存列 */}
+        <div className={`flex justify-end gap-4 mt-4 md:ms-[calc(13rem+1.5rem)] ${['tags', 'languages', 'folders'].includes(activeTab) ? '' : 'hidden'}`}>
           <Button
             variant="outline"
             onClick={() => {

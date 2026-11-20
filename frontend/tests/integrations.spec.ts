@@ -1,22 +1,23 @@
 import { expect, test, type Page } from '@playwright/test'
 
-const field = (name: string, label: string, kind: string, def: unknown = null) => ({ name, label, kind, default: def, help: '' })
+const field = (name: string, label: string, kind: string, def: unknown = null, options: string[][] = [], group = '設定') => ({ name, label, kind, default: def, help: '', options, group })
 
 function integrationsState(options: { aiAvailable?: boolean; favoritesSync?: boolean; initialized?: boolean } = {}) {
     return [
         {
             key: 'navidrome', name: 'Navidrome', description: 'Navidrome 整合', enabled: true, available: true,
-            fields: [field('refresh_hook', '通知 hook', 'bool', true), field('base_url', 'Navidrome 網址', 'url', ''),
-                field('username', '帳號', 'text', ''), field('password', '密碼', 'secret'),
-                field('favorites_sync', '同步最愛', 'bool', false)],
-            settings: { refresh_hook: true, base_url: 'http://navidrome:4533', username: 'me', favorites_sync: !!options.favoritesSync },
+            fields: [field('base_url', 'Navidrome 網址', 'url', '', [], '連線'), field('username', '帳號', 'text', '', [], '連線'),
+                field('password', '密碼', 'secret', null, [], '連線'), field('refresh_hook', '通知 hook', 'bool', true, [], '掃描通知'),
+                field('sync_mode', '同步方式', 'select', 'two_way', [['two_way', '雙向'], ['local', '以 NexTags 為準'], ['remote', '以 Navidrome 為準']], '最愛同步'),
+                field('favorites_sync', '自動同步', 'bool', false, [], '最愛同步')],
+            settings: { refresh_hook: true, base_url: 'http://navidrome:4533', username: 'me', favorites_sync: !!options.favoritesSync, sync_mode: 'two_way' },
             secrets: { password: 'database' }, master_key_configured: true,
             status: { scan: { ok: true, request_requested_at: '2026-11-20T00:00:00+00:00', completed_at: '2026-11-20T00:01:00+00:00' },
                 favorites: { initialized: !!options.initialized, last: null } },
         },
         {
             key: 'ai_lyrics', name: 'AI 歌詞整理', description: 'AI', enabled: true, available: !!options.aiAvailable,
-            fields: [field('api_key', 'Anthropic API 金鑰', 'secret')], settings: {},
+            fields: [field('api_key', 'Anthropic API 金鑰', 'secret', null, [], '金鑰')], settings: {},
             secrets: { api_key: options.aiAvailable ? 'database' : null }, master_key_configured: true, status: {},
         },
     ]
@@ -37,7 +38,7 @@ async function mockApi(page: Page, options: Parameters<typeof integrationsState>
             response = state.find(item => endpoint.endsWith(item.key))
         } else if (endpoint === 'integrations/navidrome/favorites/preview') {
             calls.previews += 1
-            response = { initialized: false, matched_songs: 9, local_favorites: 1, remote_favorites: 2, only_local: [], only_remote: [],
+            response = { mode: 'two_way', initialized: false, matched_songs: 9, local_favorites: 1, remote_favorites: 2, only_local: [], only_remote: [],
                 only_local_count: 1, only_remote_count: 2, not_in_navidrome: 0, not_in_nextags: 0, plan: { star: 1, unstar: 0, favorite: 2, unfavorite: 0 } }
         } else if (endpoint === 'integrations/navidrome/favorites/sync') {
             calls.syncs.push(route.request().postDataJSON())
@@ -65,16 +66,19 @@ async function mockApi(page: Page, options: Parameters<typeof integrationsState>
 
 test('secrets are only sent when typed and can be cleared', async ({ page }) => {
     const calls = await mockApi(page)
-    await page.goto('/settings?tab=integrations')
+    await page.goto('/settings?tab=integrations&integration=navidrome')
     const card = page.getByTestId('integration-navidrome')
     const password = card.getByLabel('密碼', { exact: true })
+    const save = card.getByRole('button', { name: '儲存連線' })
     await expect(password).toHaveAttribute('placeholder', '已設定，留空則不變')
     await expect(password).toHaveValue('')
-    await card.getByRole('button', { name: '儲存設定' }).click()
+    await expect(save).toBeDisabled() // 沒有修改時不能儲存
+    await card.getByLabel('帳號').fill('someone')
+    await save.click()
     await expect.poll(() => calls.puts.length).toBe(1)
-    expect(calls.puts[0].body.secrets).toBeUndefined()
+    expect(calls.puts[0].body).toEqual({ settings: { base_url: 'http://navidrome:4533', username: 'someone' } })
     await password.fill('new-pass')
-    await card.getByRole('button', { name: '儲存設定' }).click()
+    await save.click()
     await expect.poll(() => calls.puts.length).toBe(2)
     expect(calls.puts[1].body.secrets).toEqual({ password: 'new-pass' })
     await card.getByRole('button', { name: '清除密碼' }).click()
@@ -82,17 +86,35 @@ test('secrets are only sent when typed and can be cleared', async ({ page }) => 
     expect(calls.puts[2].body).toEqual({ secrets: { password: null } })
 })
 
-test('the first favorites sync requires a preview and sends the chosen strategy', async ({ page }) => {
-    const calls = await mockApi(page, { favoritesSync: true })
-    await page.goto('/settings?tab=integrations')
-    const start = page.getByRole('button', { name: '開始初次同步' })
+test('favorites sync controls are visible right away and the mode applies immediately', async ({ page }) => {
+    const calls = await mockApi(page)
+    await page.goto('/settings?tab=integrations&integration=navidrome')
+    const card = page.getByTestId('integration-navidrome')
+    await expect(page.getByTestId('favorites-mode')).toContainText('都會同步到另一邊')
+    await card.getByLabel('同步方式').selectOption('remote')
+    await expect.poll(() => calls.puts.length).toBe(1)
+    expect(calls.puts[0].body).toEqual({ settings: { sync_mode: 'remote' } })
+
+    const start = card.getByRole('button', { name: '確認並開始同步' })
     await expect(start).toBeDisabled()
-    await page.getByLabel(/以 Navidrome 為準/).check()
-    await page.getByRole('button', { name: '預覽差異' }).click()
-    await expect(page.getByTestId('favorites-preview')).toContainText('NexTags 加入 2')
+    await card.getByRole('button', { name: '預覽差異' }).click()
+    await expect(card.getByTestId('favorites-preview')).toContainText('NexTags 加入 2')
     await start.click()
     await expect.poll(() => calls.syncs.length).toBe(1)
-    expect(calls.syncs[0]).toEqual({ strategy: 'remote' })
+    expect(calls.syncs[0]).toEqual({ confirm: true })
+})
+
+test('the sidebar lists integrations, opens one from the overview and can collapse', async ({ page }) => {
+    await mockApi(page)
+    await page.goto('/settings')
+    const nav = page.getByRole('tablist', { name: '設定項目' })
+    await nav.getByRole('tab', { name: '整合', exact: true }).click()
+    await page.getByRole('button', { name: /^Navidrome/ }).click()
+    await expect(page.getByTestId('integration-navidrome')).toBeVisible()
+    await expect(page).toHaveURL(/tab=integrations&integration=navidrome/)
+    await expect(nav.getByRole('tab', { name: /AI 歌詞整理/ })).toBeVisible()
+    await nav.getByRole('button', { name: '收合整合清單' }).click()
+    await expect(nav.getByRole('tab', { name: /AI 歌詞整理/ })).toHaveCount(0)
 })
 
 test('the AI lyrics button is hidden when the integration is unavailable', async ({ page }) => {

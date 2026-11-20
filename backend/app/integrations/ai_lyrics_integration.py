@@ -11,7 +11,7 @@ class AiLyricsIntegration(Integration):
             name='AI 歌詞整理',
             description='使用 Anthropic Claude 統一 LRC 時間格式、簡轉繁並加上中文翻譯。提示詞可在「提示詞管理」修改。',
             enabled_by_default=True,  # 維持既有部署的行為；沒有金鑰時視為不可用
-            fields=[Field('api_key', 'Anthropic API 金鑰', 'secret', help='也可用環境變數 ANTHROPIC_TOKEN 提供')],
+            fields=[Field('api_key', 'Anthropic API 金鑰', 'secret', help='也可用環境變數 ANTHROPIC_TOKEN 提供', group='金鑰')],
         )
 
     def available(self) -> bool:

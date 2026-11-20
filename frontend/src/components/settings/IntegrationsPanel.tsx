@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { toast } from 'sonner';
+import { ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import {
-  fetchIntegrations,
   previewFavorites,
   saveIntegration,
   syncFavorites,
@@ -12,7 +12,7 @@ import {
   type FavoritesPreview,
   type Integration,
   type IntegrationField,
-  type SyncStrategy,
+  type SyncMode,
 } from '@/lib/integrations';
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : '發生錯誤，請重試');
@@ -22,13 +22,67 @@ const formatTime = (value?: string) => {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-TW');
 };
 
-function FieldInput({ field, value, secret, onChange }: {
+/** 開關與下拉選單改了就立即儲存；文字類欄位由區塊的「儲存」一起送出 */
+const appliesImmediately = (field: IntegrationField) => field.kind === 'bool' || field.kind === 'select';
+/** 依賴另一個開關的欄位：開關關閉時停用 */
+const DEPENDS_ON: Record<string, string> = { sync_interval_minutes: 'favorites_sync' };
+
+// ---------------- 總覽 ----------------
+
+export function IntegrationsOverview({ integrations, onOpen, onChanged }: {
+  integrations: Integration[];
+  onOpen: (key: string) => void;
+  onChanged: () => void;
+}) {
+  const toggle = async (integration: Integration, enabled: boolean) => {
+    try {
+      await saveIntegration(integration.key, { enabled });
+      toast.success(`${integration.name} 已${enabled ? '啟用' : '停用'}`);
+      onChanged();
+    } catch (error) {
+      toast.error(errorText(error));
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-gray-600">
+        整合是可開關的外部連動。關閉後核心功能照常運作，只是不與該服務互動。點進去調整各自的設定。
+      </p>
+      <ul className="divide-y rounded-xl border bg-white">
+        {integrations.map(integration => (
+          <li key={integration.key} className="flex items-center gap-4 p-4">
+            <button type="button" onClick={() => onOpen(integration.key)}
+              className="flex flex-1 items-center gap-3 text-left min-w-0 rounded-md hover:bg-gray-50 -m-2 p-2">
+              <span className="min-w-0">
+                <span className="block font-medium text-gray-900">{integration.name}</span>
+                <span className="block text-sm text-gray-600 truncate">{integration.description}</span>
+                {integration.enabled && !integration.available && (
+                  <span className="block text-xs text-amber-700 mt-1">已啟用，但設定尚未完成</span>
+                )}
+              </span>
+              <ChevronRight className="ml-auto size-4 shrink-0 text-gray-400" aria-hidden="true" />
+            </button>
+            <Switch aria-label={`啟用 ${integration.name}`} checked={integration.enabled}
+              onCheckedChange={checked => toggle(integration, checked)} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ---------------- 欄位 ----------------
+
+function FieldInput({ field, value, secret, disabled, onChange }: {
   field: IntegrationField;
   value: unknown;
   secret: 'env' | 'database' | null | undefined;
+  disabled: boolean;
   onChange: (value: unknown) => void;
 }) {
   const id = useId();
+  const describedBy = field.help ? `${id}-help` : undefined;
   const help = field.help && <p id={`${id}-help`} className="text-xs text-gray-500 mt-1">{field.help}</p>;
   if (field.kind === 'bool') {
     return (
@@ -37,7 +91,22 @@ function FieldInput({ field, value, secret, onChange }: {
           <label htmlFor={id} className="text-sm text-gray-800">{field.label}</label>
           {help}
         </div>
-        <Switch id={id} checked={Boolean(value)} onCheckedChange={onChange} aria-describedby={field.help ? `${id}-help` : undefined} />
+        <Switch id={id} checked={Boolean(value)} disabled={disabled} onCheckedChange={onChange} aria-describedby={describedBy} />
+      </div>
+    );
+  }
+  if (field.kind === 'select') {
+    return (
+      <div>
+        <label htmlFor={id} className="text-sm text-gray-800 block mb-1">{field.label}</label>
+        <select id={id} value={String(value ?? field.default ?? '')} disabled={disabled}
+          onChange={event => onChange(event.target.value)} aria-describedby={describedBy}
+          className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm disabled:opacity-60">
+          {field.options.map(([optionValue, optionLabel]) => (
+            <option key={optionValue} value={optionValue}>{optionLabel}</option>
+          ))}
+        </select>
+        {help}
       </div>
     );
   }
@@ -51,22 +120,38 @@ function FieldInput({ field, value, secret, onChange }: {
         autoComplete={field.kind === 'secret' ? 'new-password' : 'off'}
         value={String(value ?? '')}
         placeholder={field.kind === 'secret' ? secretHint : ''}
-        disabled={field.kind === 'secret' && secret === 'env'}
+        disabled={disabled || (field.kind === 'secret' && secret === 'env')}
         onChange={event => onChange(field.kind === 'number' ? Number(event.target.value) : event.target.value)}
-        aria-describedby={field.help ? `${id}-help` : undefined}
+        aria-describedby={describedBy}
       />
       {help}
     </div>
   );
 }
 
-function FavoritesSync({ integration, onChanged }: { integration: Integration; onChanged: () => void }) {
-  const [strategy, setStrategy] = useState<SyncStrategy>('union');
+// ---------------- 最愛同步（Navidrome「最愛同步」區塊的操作） ----------------
+
+const MODE_NOTES: Record<SyncMode, string> = {
+  two_way: '在哪一邊加入或取消，都會同步到另一邊。第一次同步時，任一邊是最愛就設為最愛。',
+  local: 'Navidrome 會跟著 NexTags；在 Navidrome 上的修改會在下次同步時被改回來。',
+  remote: 'NexTags 會跟著 Navidrome（改寫音檔的 FAVORITE 標籤）；在 NexTags 上的修改會被改回來。',
+};
+
+function FavoritesSyncActions({ integration, connectionReady, onChanged }: {
+  integration: Integration;
+  connectionReady: boolean;
+  onChanged: () => void;
+}) {
+  const mode = (integration.settings.sync_mode as SyncMode) ?? 'two_way';
   const [preview, setPreview] = useState<FavoritesPreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const initialized = integration.status.favorites?.initialized ?? false;
+  const confirmed = integration.status.favorites?.initialized ?? false;
   const last = integration.status.favorites?.last;
+  const usable = integration.enabled && connectionReady;
+
+  // 同步方式變了，舊的預覽就不再代表這次會做的事
+  useEffect(() => { setPreview(null); }, [mode]);
 
   const run = async (action: () => Promise<unknown>) => {
     setBusy(true);
@@ -81,51 +166,39 @@ function FavoritesSync({ integration, onChanged }: { integration: Integration; o
   };
 
   return (
-    <section className="border-t pt-4 space-y-3" aria-label="最愛同步">
-      <h4 className="font-medium text-gray-900">最愛同步</h4>
-      <p className="text-sm text-gray-600">
-        NexTags 的 FAVORITE 標籤 ↔ Navidrome 的喜愛。之後的同步只把「上次同步後有改動的那一邊」帶到另一邊。
-      </p>
+    <div className="space-y-3 rounded-lg bg-gray-50 p-3">
+      <p className="text-sm text-gray-600" data-testid="favorites-mode">{MODE_NOTES[mode]}</p>
+      {!connectionReady && (
+        <p className="text-sm text-amber-700">請先在上方「連線」填寫網址、帳號與密碼並儲存，才能預覽或同步。</p>
+      )}
+      {connectionReady && !confirmed && (
+        <p className="text-sm text-amber-700">
+          尚未確認同步（第一次或剛切換同步方式）：請先預覽差異，確認數量後再開始。確認前不會自動同步。
+        </p>
+      )}
       {last && (
         <p className="text-sm text-gray-600" data-testid="favorites-last">
           上次同步：{formatTime(last.finished_at)}，{last.ok ? '成功' : `失敗：${last.error ?? last.errors?.join('、')}`}
           {last.applied && `（Navidrome 加入 ${last.applied.star}、取消 ${last.applied.unstar}；NexTags 加入 ${last.applied.favorite}、取消 ${last.applied.unfavorite}）`}
         </p>
       )}
-      {!initialized && (
-        <fieldset className="space-y-2">
-          <legend className="text-sm text-gray-800">初次同步方式</legend>
-          {([
-            ['union', '合併：任一邊是最愛就設為最愛（建議）'],
-            ['local', '以 NexTags 為準：Navidrome 改成跟 NexTags 一樣'],
-            ['remote', '以 Navidrome 為準：NexTags 改成跟 Navidrome 一樣（會改寫音檔標籤）'],
-          ] as const).map(([value, label]) => (
-            <label key={value} className="flex items-center gap-2 text-sm">
-              <input type="radio" name="favorites-strategy" value={value} checked={strategy === value}
-                onChange={() => { setStrategy(value); setPreview(null); }} />
-              {label}
-            </label>
-          ))}
-        </fieldset>
-      )}
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" disabled={busy || !integration.available}
-          onClick={() => run(async () => setPreview(await previewFavorites(strategy)))}>
+        <Button variant="outline" disabled={busy || !usable}
+          onClick={() => run(async () => setPreview(await previewFavorites()))}>
           預覽差異
         </Button>
-        <Button disabled={busy || !integration.available || (!initialized && !preview)}
+        <Button disabled={busy || !usable || (!confirmed && !preview)}
           onClick={() => run(async () => {
-            const result = await syncFavorites(initialized ? undefined : strategy);
+            const result = await syncFavorites(!confirmed);
             toast.success(`最愛同步完成：Navidrome 加入 ${result.applied?.star ?? 0}、取消 ${result.applied?.unstar ?? 0}；NexTags 加入 ${result.applied?.favorite ?? 0}、取消 ${result.applied?.unfavorite ?? 0}`);
             setPreview(null);
             onChanged();
           })}>
-          {initialized ? '立即同步' : '開始初次同步'}
+          {confirmed ? '立即同步' : '確認並開始同步'}
         </Button>
       </div>
-      {!initialized && !preview && <p className="text-xs text-gray-500">初次同步前請先預覽差異，確認要修改的數量。</p>}
       {preview && (
-        <div className="rounded-md bg-gray-50 p-3 text-sm space-y-1" data-testid="favorites-preview">
+        <div className="rounded-md border bg-white p-3 text-sm space-y-1" data-testid="favorites-preview">
           <p>兩邊都有的歌曲 {preview.matched_songs} 首；NexTags 最愛 {preview.local_favorites} 首、Navidrome 喜愛 {preview.remote_favorites} 首。</p>
           <p>只在 NexTags 是最愛：{preview.only_local_count} 首；只在 Navidrome 是喜愛：{preview.only_remote_count} 首。</p>
           <p className="font-medium">
@@ -139,131 +212,165 @@ function FavoritesSync({ integration, onChanged }: { integration: Integration; o
         </div>
       )}
       {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
-    </section>
+    </div>
   );
 }
 
-function IntegrationCard({ integration, onChanged }: { integration: Integration; onChanged: () => void }) {
+// ---------------- 單一整合的設定頁 ----------------
+
+function FieldGroup({ integration, title, fields, onChanged, actions, afterField, children }: {
+  integration: Integration;
+  title: string;
+  fields: IntegrationField[];
+  onChanged: () => void;
+  /** 與「儲存」並排的按鈕（例如測試連線） */
+  actions?: React.ReactNode;
+  /** 插在某個欄位之後的內容（例如同步方式之後的預覽與同步） */
+  afterField?: Record<string, React.ReactNode>;
+  children?: React.ReactNode;
+}) {
   const [values, setValues] = useState<Record<string, unknown>>(integration.settings);
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
-  const titleId = useId();
+  const headingId = useId();
+  const disabled = !integration.enabled || busy;
+  const textFields = fields.filter(field => !appliesImmediately(field));
+  const dirty = Object.keys(secrets).length > 0 ||
+    textFields.some(field => field.kind !== 'secret' && values[field.name] !== integration.settings[field.name]);
 
   useEffect(() => { setValues(integration.settings); }, [integration.settings]);
 
-  const save = async (enabled?: boolean) => {
+  const save = async (update: Parameters<typeof saveIntegration>[1], message: string) => {
     setBusy(true);
     setError('');
     try {
-      await saveIntegration(integration.key, { enabled, settings: values, secrets: Object.keys(secrets).length ? secrets : undefined });
+      await saveIntegration(integration.key, update);
+      toast.success(message);
       setSecrets({});
-      toast.success(`${integration.name} 設定已儲存`);
       onChanged();
     } catch (error) {
       setError(errorText(error));
+      setValues(integration.settings);
     } finally {
       setBusy(false);
     }
   };
 
-  const clearSecret = async (name: string) => {
-    setBusy(true);
-    setError('');
-    try {
-      await saveIntegration(integration.key, { secrets: { [name]: null } });
-      onChanged();
-    } catch (error) {
-      setError(errorText(error));
-    } finally {
-      setBusy(false);
-    }
-  };
+  const saveTextFields = () => save({
+    settings: Object.fromEntries(textFields.filter(field => field.kind !== 'secret').map(field => [field.name, values[field.name]])),
+    secrets: Object.keys(secrets).length ? secrets : undefined,
+  }, `${title}已儲存`);
 
-  const scan = integration.status.scan;
   return (
-    <section className="border rounded-xl p-4 space-y-4 bg-white" aria-labelledby={titleId} data-testid={`integration-${integration.key}`}>
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h3 id={titleId} className="font-semibold text-gray-900">{integration.name}</h3>
-          <p className="text-sm text-gray-600 mt-1">{integration.description}</p>
-        </div>
-        <Switch aria-label={`啟用 ${integration.name}`} checked={integration.enabled} disabled={busy}
-          onCheckedChange={checked => save(checked)} />
-      </div>
-      {integration.enabled && (
-        <>
-          <div className="space-y-3">
-            {integration.fields.map(field => (
-              <div key={field.name}>
-                <FieldInput
-                  field={field}
-                  value={field.kind === 'secret' ? secrets[field.name] ?? '' : values[field.name]}
-                  secret={integration.secrets[field.name]}
-                  onChange={value => field.kind === 'secret'
-                    ? setSecrets(prev => ({ ...prev, [field.name]: String(value) }))
-                    : setValues(prev => ({ ...prev, [field.name]: value }))}
-                />
-                {field.kind === 'secret' && integration.secrets[field.name] === 'database' && (
-                  <Button variant="outline" size="sm" className="mt-1" disabled={busy} onClick={() => clearSecret(field.name)}>
-                    清除{field.label}
-                  </Button>
-                )}
-              </div>
-            ))}
-            {integration.fields.some(field => field.kind === 'secret') && !integration.master_key_configured && (
-              <p role="alert" className="text-sm text-amber-700">
-                伺服器未設定 NEXTAGS_SECRET_KEY，無法儲存密鑰；請在 .env 設定後重新啟動，或改用環境變數提供。
-              </p>
-            )}
-          </div>
-          {scan !== undefined && (
-            <p className="text-sm text-gray-600">
-              最近一次 Navidrome 掃描：{scan ? `${formatTime(scan.completed_at)}（${scan.ok ? '成功' : '失敗'}）` : '尚未收到狀態，若未安裝 refresh hook 請關閉「移動檔案前等待 Navidrome 掃描」'}
-            </p>
-          )}
-          <div className="flex flex-wrap gap-2">
-            <Button variant="success" disabled={busy} onClick={() => save()}>儲存設定</Button>
-            <Button variant="outline" disabled={busy}
-              onClick={async () => { setTestResult(null); setTestResult(await testIntegration(integration.key).catch(error => ({ ok: false, message: errorText(error) }))); }}>
-              測試連線
+    <section aria-labelledby={headingId} className="rounded-xl border bg-white p-4 space-y-4">
+      <h3 id={headingId} className="font-medium text-gray-900">{title}</h3>
+      {fields.map(field => (
+        <div key={field.name}>
+          <FieldInput
+            field={field}
+            value={field.kind === 'secret' ? secrets[field.name] ?? '' : values[field.name]}
+            secret={integration.secrets[field.name]}
+            disabled={disabled || (field.name in DEPENDS_ON && !values[DEPENDS_ON[field.name]])}
+            onChange={value => {
+              if (appliesImmediately(field)) {
+                setValues(prev => ({ ...prev, [field.name]: value }));
+                save({ settings: { [field.name]: value } }, `已更新「${field.label}」`);
+              } else if (field.kind === 'secret') {
+                setSecrets(prev => ({ ...prev, [field.name]: String(value) }));
+              } else {
+                setValues(prev => ({ ...prev, [field.name]: value }));
+              }
+            }}
+          />
+          {field.kind === 'secret' && integration.secrets[field.name] === 'database' && (
+            <Button variant="outline" size="sm" className="mt-2" disabled={disabled}
+              onClick={() => save({ secrets: { [field.name]: null } }, `已清除${field.label}`)}>
+              清除{field.label}
             </Button>
-          </div>
-          {testResult && (
-            <p role="status" className={`text-sm ${testResult.ok ? 'text-green-700' : 'text-red-600'}`}>{testResult.message}</p>
           )}
-          {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
-          {integration.key === 'navidrome' && Boolean(integration.settings.favorites_sync) && (
-            <FavoritesSync integration={integration} onChanged={onChanged} />
-          )}
-        </>
+          {afterField?.[field.name] && <div className="mt-3">{afterField[field.name]}</div>}
+        </div>
+      ))}
+      {fields.some(field => field.kind === 'secret') && !integration.master_key_configured && (
+        <p role="alert" className="text-sm text-amber-700">
+          伺服器未設定 NEXTAGS_SECRET_KEY，無法儲存密鑰；請在 .env 設定後重新啟動，或改用環境變數提供。
+        </p>
       )}
+      {(textFields.length > 0 || actions) && (
+        <div className="flex flex-wrap gap-2">
+          {textFields.length > 0 && (
+            <Button variant="success" disabled={disabled || !dirty} onClick={saveTextFields}>儲存{title}</Button>
+          )}
+          {actions}
+        </div>
+      )}
+      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+      {children}
     </section>
   );
 }
 
-export default function IntegrationsPanel() {
-  const [integrations, setIntegrations] = useState<Integration[] | null>(null);
-  const [error, setError] = useState('');
+export function IntegrationDetail({ integration, onChanged }: { integration: Integration; onChanged: () => void }) {
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [testing, setTesting] = useState(false);
+  const groups = [...new Set(integration.fields.map(field => field.group))];
+  const isNavidrome = integration.key === 'navidrome';
+  const connectionReady = Boolean(integration.settings.base_url && integration.settings.username && integration.secrets.password);
+  const scan = integration.status.scan;
 
-  const load = useCallback(() => {
-    fetchIntegrations()
-      .then(list => { setIntegrations(list); setError(''); })
-      .catch(error => setError(errorText(error)));
-  }, []);
+  const toggle = async (enabled: boolean) => {
+    try {
+      await saveIntegration(integration.key, { enabled });
+      toast.success(`${integration.name} 已${enabled ? '啟用' : '停用'}`);
+      onChanged();
+    } catch (error) {
+      toast.error(errorText(error));
+    }
+  };
 
-  useEffect(load, [load]);
+  const runTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    setTestResult(await testIntegration(integration.key).catch(error => ({ ok: false, message: errorText(error) })));
+    setTesting(false);
+  };
 
-  if (error) return <p role="alert" className="text-sm text-red-600">{error}</p>;
-  if (!integrations) return <p className="text-sm text-gray-500">載入中…</p>;
+  const testButton = (
+    <Button variant="outline" disabled={!integration.enabled || testing} onClick={runTest}>
+      {testing ? '測試中…' : '測試連線'}
+    </Button>
+  );
+
   return (
-    <div className="space-y-4">
-      <p className="text-sm text-gray-600">
-        整合是可開關的外部連動。關閉後核心功能照常運作，只是不與該服務互動。密鑰加密儲存，只能寫入、不會回傳。
-      </p>
-      {integrations.map(integration => (
-        <IntegrationCard key={integration.key} integration={integration} onChanged={load} />
+    <div className="space-y-4" data-testid={`integration-${integration.key}`}>
+      <div className="flex items-start justify-between gap-4 rounded-xl border bg-white p-4">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900">{integration.name}</h2>
+          <p className="text-sm text-gray-600 mt-1">{integration.description}</p>
+        </div>
+        <Switch aria-label={`啟用 ${integration.name}`} checked={integration.enabled} onCheckedChange={toggle} />
+      </div>
+      {!integration.enabled && (
+        <p className="text-sm text-gray-600">此整合已停用；開啟後才能修改下列設定。</p>
+      )}
+      {groups.map((group, index) => (
+        <FieldGroup key={group} integration={integration} title={group}
+          fields={integration.fields.filter(field => field.group === group)} onChanged={onChanged}
+          // 測試連線放在第一個區塊（連線／金鑰），與儲存並排
+          actions={index === 0 ? testButton : undefined}
+          afterField={isNavidrome && group === '最愛同步' ? {
+            sync_mode: <FavoritesSyncActions integration={integration} connectionReady={connectionReady} onChanged={onChanged} />,
+          } : undefined}>
+          {index === 0 && testResult && (
+            <p role="status" className={`text-sm ${testResult.ok ? 'text-green-700' : 'text-red-600'}`}>{testResult.message}</p>
+          )}
+          {isNavidrome && group === '掃描通知' && (
+            <p className="text-sm text-gray-600">
+              最近一次 Navidrome 掃描：{scan ? `${formatTime(scan.completed_at)}（${scan.ok ? '成功' : '失敗'}）` : '尚未收到狀態；若未安裝 refresh hook，請關閉「移動檔案前等待 Navidrome 掃描」'}
+            </p>
+          )}
+        </FieldGroup>
       ))}
     </div>
   );

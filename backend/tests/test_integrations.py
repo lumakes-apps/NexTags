@@ -3,7 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from cryptography.fernet import Fernet
 from fastapi import FastAPI
@@ -132,27 +132,45 @@ class EventDispatchTests(DatabaseTestCase):
 class PlanSyncTests(unittest.TestCase):
     U = {"a", "b", "c", "d"}
 
-    def test_initial_strategies(self):
-        local, remote = {"a", "b"}, {"b", "c"}
-        union = plan_sync(local, remote, self.U, None, "union")
-        self.assertEqual((union["star"], union["favorite"], union["final"]), ({"a"}, {"c"}, {"a", "b", "c"}))
-        keep_local = plan_sync(local, remote, self.U, None, "local")
-        self.assertEqual((keep_local["star"], keep_local["unstar"], keep_local["favorite"]), ({"a"}, {"c"}, set()))
-        keep_remote = plan_sync(local, remote, self.U, None, "remote")
-        self.assertEqual((keep_remote["favorite"], keep_remote["unfavorite"], keep_remote["star"]), ({"c"}, {"a"}, set()))
+    def test_two_way_first_run_keeps_any_favorite(self):
+        plan = plan_sync({"a", "b"}, {"b", "c"}, self.U, None, "two_way")
+        self.assertEqual((plan["star"], plan["favorite"], plan["final"]), ({"a"}, {"c"}, {"a", "b", "c"}))
 
-    def test_incremental_follows_the_side_that_changed(self):
-        snapshot = {"a", "b"}
+    def test_two_way_follows_the_side_that_changed(self):
         # NexTags 取消了 a、Navidrome 新增了 c：各自傳到另一邊
-        plan = plan_sync({"b"}, {"a", "b", "c"}, self.U, snapshot)
+        plan = plan_sync({"b"}, {"a", "b", "c"}, self.U, {"a", "b"}, "two_way")
         self.assertEqual(plan["unstar"], {"a"})
         self.assertEqual(plan["favorite"], {"c"})
         self.assertEqual(plan["final"], {"b", "c"})
 
+    def test_one_way_modes_always_follow_their_side(self):
+        snapshot = {"a", "b"}
+        # 不論上次結果，以 NexTags 為準時 Navidrome 的新增會被取消；反之亦然
+        keep_local = plan_sync({"b"}, {"a", "b", "c"}, self.U, snapshot, "local")
+        self.assertEqual((keep_local["unstar"], keep_local["favorite"]), ({"a", "c"}, set()))
+        keep_remote = plan_sync({"b", "d"}, {"a", "b"}, self.U, snapshot, "remote")
+        self.assertEqual((keep_remote["favorite"], keep_remote["unfavorite"], keep_remote["star"]), ({"a"}, {"d"}, set()))
+
     def test_songs_missing_on_one_side_are_left_alone(self):
-        plan = plan_sync({"a", "x"}, {"a"}, {"a"}, {"a"})
+        plan = plan_sync({"a", "x"}, {"a"}, {"a"}, {"a"}, "two_way")
         self.assertEqual(plan["star"], set())
         self.assertEqual(plan["final"], {"a"})
+
+
+class SyncModeSettingTests(DatabaseTestCase):
+    def test_invalid_mode_is_rejected(self):
+        with self.assertRaises(ValueError):
+            integrations.navidrome.save(settings={"sync_mode": "sideways"})
+
+    def test_changing_mode_requires_confirming_again(self):
+        fake_redis = Mock()
+        with patch("app.integrations.navidrome_integration._redis_available", return_value=True), \
+                patch("app.integrations.navidrome_integration._redis", return_value=fake_redis):
+            integrations.navidrome.save(settings={"sync_mode": "two_way"})  # 沒變：不重設
+            fake_redis.delete.assert_not_called()
+            integrations.navidrome.save(settings={"sync_mode": "remote"})
+            fake_redis.delete.assert_called_once()
+        self.assertEqual(integrations.navidrome.settings()["sync_mode"], "remote")
 
 
 if __name__ == "__main__":
