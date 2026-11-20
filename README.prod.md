@@ -55,3 +55,21 @@ make stop                 # 停止服務
 1. 後端映像以 `USER_ID` / `GROUP_ID`（預設 1000）建立使用者，請對齊主機上音樂資料夾的擁有者，否則會無法寫入標籤，詳見 [PERMISSION_FIX.md](PERMISSION_FIX.md)
 2. 首次啟動後到 Settings 頁設定音樂資料夾，再到 Cache 頁重建快取
 3. 所有服務設定為 `restart: unless-stopped`
+
+## Navidrome 整合（選用）
+
+最愛同步需要後端能連到 Navidrome。若 Navidrome 跑在另一個 compose 專案，
+在伺服器建立 `docker-compose.override.yml`（已列入 .gitignore，不進版本控制），讓後端加入 Navidrome 的網路：
+
+```yaml
+services:
+  backend:
+    networks: [app-network, navidrome]
+networks:
+  navidrome:
+    name: music-stack_default   # Navidrome 所在的網路名稱
+    external: true
+```
+
+之後在設定頁「整合」把 Navidrome 網址設為 `http://navidrome:4533`。
+密碼會以 `.env` 中的 `NEXTAGS_SECRET_KEY` 加密儲存，請先設定該值（見 `.env.example`）。

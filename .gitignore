@@ -52,3 +52,5 @@ wheels/
 
 # 忽略備份資料夾
 /backup
+# 主機專用的 compose 覆寫（例如加入 Navidrome 所在的 docker 網路）
+docker-compose.override.yml
