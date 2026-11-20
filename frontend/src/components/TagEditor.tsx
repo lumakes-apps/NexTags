@@ -1,9 +1,22 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo, useId } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
+import ArtistTagInput from '@/components/ArtistTagInput';
+import { useAutoSort } from '@/lib/useAutoSort';
+import {
+  chipsFromTags,
+  fetchArtistDirectory,
+  joinNames,
+  joinSorts,
+  resolveChips,
+  type ArtistChip,
+  type ArtistDirectory,
+  type ArtistRole,
+} from '@/lib/artists';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
-import { X, ArrowRight, Save, Upload, Image as ImageIcon, Sparkles, AudioLines } from 'lucide-react';
+import { X, Save, Upload, Image as ImageIcon, Sparkles, AudioLines } from 'lucide-react';
 
 interface Song {
   Title: string;
@@ -34,6 +47,16 @@ interface Song {
   ReplayGainTrackPeak?: string;
 }
 
+// 歌手標籤欄位與 Song 欄位的對應
+const ARTIST_FIELDS: { role: ArtistRole; name: keyof Song; sort: keyof Song }[] = [
+  { role: 'artist', name: 'Artist', sort: 'SortArtist' },
+  { role: 'albumartist', name: 'AlbumArtist', sort: 'SortAlbumArtist' },
+  { role: 'composer', name: 'Composer', sort: 'SortComposer' },
+  { role: 'performer', name: 'Performer', sort: 'SortPerformer' },
+];
+
+const EMPTY_CHIPS: Record<ArtistRole, ArtistChip[]> = { artist: [], albumartist: [], composer: [], performer: [] };
+
 interface TagEditorProps {
   song: Song | null;
   onClose: () => void;
@@ -52,6 +75,26 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [generatingReplayGain, setGeneratingReplayGain] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [artistChips, setArtistChips] = useState<Record<ArtistRole, ArtistChip[]>>(EMPTY_CHIPS);
+  const [artistDirectory, setArtistDirectory] = useState<ArtistDirectory | null>(null);
+  const [directoryReady, setDirectoryReady] = useState(false);
+  const titleId = useId();
+  // 排序標題由標題自動轉拼音，不手動編輯
+  const titleSort = useAutoSort(editedSong?.Title ?? '', song?.Title ?? '', song?.SortTitle ?? '');
+  const albumId = useId();
+  const albumSort = useAutoSort(editedSong?.Album ?? '', song?.Album ?? '', song?.SortAlbum ?? '');
+
+  // 每個歌手欄位一個穩定的 setter，讓標籤元件可以用函式更新避免競態
+  const artistSetters = useMemo(() => {
+    const setters = {} as Record<ArtistRole, Dispatch<SetStateAction<ArtistChip[]>>>;
+    for (const { role } of ARTIST_FIELDS) {
+      setters[role] = update => setArtistChips(prev => ({
+        ...prev,
+        [role]: typeof update === 'function' ? update(prev[role]) : update,
+      }));
+    }
+    return setters;
+  }, []);
 
   useEffect(() => {
     if (song) {
@@ -76,6 +119,9 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
         ReplayGainTrackGain: song.ReplayGainTrackGain || '',
         ReplayGainTrackPeak: song.ReplayGainTrackPeak || '',
       });
+      const chips = { ...EMPTY_CHIPS };
+      for (const field of ARTIST_FIELDS) chips[field.role] = chipsFromTags(song[field.name], song[field.sort]);
+      setArtistChips(chips);
       // 設置封面圖片 - 使用 API 端點
       if (song.Cover) {
         const imageUrl = `/api/images/cover?path=${encodeURIComponent(song.Cover)}&v=${Date.now()}`;
@@ -84,6 +130,21 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
         setCoverImage(null);
       }
     }
+  }, [song]);
+
+  // 每次開啟編輯器時重新載入歌手清單，確保包含最新存檔的名字
+  useEffect(() => {
+    if (!song) return;
+    let cancelled = false;
+    setDirectoryReady(false);
+    fetchArtistDirectory()
+      .then(directory => { if (!cancelled) setArtistDirectory(directory); })
+      .catch(error => {
+        console.error('Failed to load artists:', error);
+        if (!cancelled) setArtistDirectory(null);
+      })
+      .finally(() => { if (!cancelled) setDirectoryReady(true); });
+    return () => { cancelled = true; };
   }, [song]);
 
   useEffect(() => {
@@ -119,18 +180,7 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
   if (!song || !editedSong) return null;
 
   const handleInputChange = (field: keyof Song, value: string | string[]) => {
-    // 處理多歌手輸入（分號分隔）
-    if (field === 'Artist' || field === 'SortArtist' || field === 'AlbumArtist' || field === 'SortAlbumArtist' || field === 'Composer' || field === 'SortComposer' || field === 'Performer' || field === 'SortPerformer') {
-      if (typeof value === 'string' && value.includes(';')) {
-        // 分號分隔的多歌手，轉為陣列
-        const artists = value.split(';').map(artist => artist.trim()).filter(artist => artist.length > 0);
-        setEditedSong(prev => prev ? { ...prev, [field]: artists.join(';') } : null);
-      } else {
-        setEditedSong(prev => prev ? { ...prev, [field]: value } : null);
-      }
-    } else {
-      setEditedSong(prev => prev ? { ...prev, [field]: value } : null);
-    }
+    setEditedSong(prev => prev ? { ...prev, [field]: value } : null);
   };
 
   const handleImageClick = () => {
@@ -190,33 +240,6 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
     setCoverImage(song.Cover ? `/api/images/cover?path=${encodeURIComponent(song.Cover)}&v=${Date.now()}` : null);
     handleInputChange('Cover', song.Cover);
   };
-
-  const convertToPinyin = async (field: 'Title' | 'Artist' | 'Album' | 'AlbumArtist' | 'Composer' | 'Performer') => {
-    const sourceValue = editedSong[field];
-    if (!sourceValue) return;
-
-    setLoading(true);
-    try {
-      const response = await fetch('/api/tools/pinyin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: sourceValue })
-      });
-
-      const data = await response.json();
-
-      if (response.ok && data.result) {
-        const sortField = `Sort${field}` as keyof Song;
-        handleInputChange(sortField, data.result);
-      }
-    } catch (error) {
-      console.error('Pinyin conversion failed:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-
 
   const processLyrics = async () => {
     if (!editedSong?.Lyrics) return;
@@ -303,7 +326,14 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
     setIsSaving(true);
     setSaveError(null);
     try {
-      await onSave(editedSong);
+      // 由歌手標籤組出名字與排序欄位；尚未決定的排序名稱在這裡補齊
+      const song = { ...editedSong, SortTitle: await titleSort.resolve(), SortAlbum: await albumSort.resolve() };
+      for (const field of ARTIST_FIELDS) {
+        const chips = await resolveChips(artistChips[field.role], artistDirectory);
+        (song[field.name] as string) = joinNames(chips);
+        (song[field.sort] as string) = joinSorts(chips);
+      }
+      await onSave(song);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : '儲存失敗，請重試');
     } finally {
@@ -389,180 +419,68 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
             {editedSong.Cover.startsWith('data:') && <p role="status" className="text-sm text-center mt-2">封面尚未儲存，請點擊「保存變更」</p>}
           </div>
           <div className="border p-4 rounded-xl bg-white grid gap-4">
-            <div className="flex items-end bg-white rounded-lg gap-4">
-              <div>
-                <label className="text-gray-500 block mb-1">Title</label>
-                <Input
-                  value={editedSong.Title}
-                  onChange={(e) => handleInputChange('Title', e.target.value)}
-                  placeholder="歌曲標題"
-                />
-              </div>
-              <div className="col-auto flex justify-center">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => convertToPinyin('Title')}
-                  disabled={loading}
-                  className="w-8 h-8 p-0"
-                >
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-              </div>
-              <div>
-                <label className="text-gray-500 block mb-1">SortTitle</label>
-                <Input
-                  value={editedSong.SortTitle || ''}
-                  onChange={(e) => handleInputChange('SortTitle', e.target.value)}
-                  placeholder="排序標題"
-                />
-              </div>
+            <div>
+              <label className="text-gray-500 block mb-1" htmlFor={titleId}>Title</label>
+              <Input
+                id={titleId}
+                value={editedSong.Title}
+                onChange={(e) => handleInputChange('Title', e.target.value)}
+                placeholder="歌曲標題"
+                aria-describedby={`${titleId}-sort`}
+              />
+              <p id={`${titleId}-sort`} className="mt-1 text-xs text-gray-400" data-testid="title-sort-preview">
+                排序：{titleSort.sort ?? '…'}
+              </p>
             </div>
-            <div className="flex items-end bg-white rounded-lg gap-4">
-              <div>
-                <label className="text-gray-500 block mb-1">Artist</label>
-                <Input
-                  value={editedSong.Artist}
-                  onChange={(e) => handleInputChange('Artist', e.target.value)}
-                  placeholder="藝術家"
-                />
-              </div>
-              <div className="flex justify-center">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => convertToPinyin('Artist')}
-                  disabled={loading}
-                  className="w-8 h-8 p-0"
-                >
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-              </div>
-              <div>
-                <label className="text-gray-500 block mb-1">SortArtist</label>
-                <Input
-                  value={editedSong.SortArtist || ''}
-                  onChange={(e) => handleInputChange('SortArtist', e.target.value)}
-                  placeholder="排序藝術家"
-                />
-              </div>
+            <ArtistTagInput
+              label="Artist"
+              role="artist"
+              value={artistChips.artist}
+              onChange={artistSetters.artist}
+              directory={artistDirectory}
+              directoryReady={directoryReady}
+              disabled={isSaving}
+            />
+            <div>
+              <label className="text-gray-500 block mb-1" htmlFor={albumId}>Album</label>
+              <Input
+                id={albumId}
+                value={editedSong.Album}
+                onChange={(e) => handleInputChange('Album', e.target.value)}
+                placeholder="專輯名稱"
+                aria-describedby={`${albumId}-sort`}
+              />
+              <p id={`${albumId}-sort`} className="mt-1 text-xs text-gray-400" data-testid="album-sort-preview">
+                排序：{albumSort.sort ?? '…'}
+              </p>
             </div>
-            <div className="flex items-end bg-white rounded-lg gap-4">
-              <div>
-                <label className="text-gray-500 block mb-1">Album</label>
-                <Input
-                  value={editedSong.Album}
-                  onChange={(e) => handleInputChange('Album', e.target.value)}
-                  placeholder="專輯名稱"
-                />
-              </div>
-              <div className="flex justify-center">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => convertToPinyin('Album')}
-                  disabled={loading}
-                  className="w-8 h-8 p-0"
-                >
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-              </div>
-              <div>
-                <label className="text-gray-500 block mb-1">SortAlbum</label>
-                <Input
-                  value={editedSong.SortAlbum || ''}
-                  onChange={(e) => handleInputChange('SortAlbum', e.target.value)}
-                  placeholder="排序專輯"
-                />
-              </div>
-            </div>
-            <div className="flex items-end bg-white rounded-lg gap-4">
-              <div>
-                <label className="text-gray-500 block mb-1">AlbumArtist</label>
-                <Input
-                  value={editedSong.AlbumArtist || ''}
-                  onChange={(e) => handleInputChange('AlbumArtist', e.target.value)}
-                  placeholder="專輯藝術家"
-                />
-              </div>
-              <div className="flex justify-center">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => convertToPinyin('AlbumArtist')}
-                  disabled={loading}
-                  className="w-8 h-8 p-0"
-                >
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-              </div>
-              <div>
-                <label className="text-gray-500 block mb-1">SortAlbumArtist</label>
-                <Input
-                  value={editedSong.SortAlbumArtist || ''}
-                  onChange={(e) => handleInputChange('SortAlbumArtist', e.target.value)}
-                  placeholder="排序專輯藝術家"
-                />
-              </div>
-            </div>
-            <div className="flex items-end bg-white rounded-lg gap-4">
-              <div>
-                <label className="text-gray-500 block mb-1">Composer</label>
-                <Input
-                  value={editedSong.Composer || ''}
-                  onChange={(e) => handleInputChange('Composer', e.target.value)}
-                  placeholder="作曲家"
-                />
-              </div>
-              <div className="flex justify-center">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => convertToPinyin('Composer')}
-                  disabled={loading}
-                  className="w-8 h-8 p-0"
-                >
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-              </div>
-              <div>
-                <label className="text-gray-500 block mb-1">SortComposer</label>
-                <Input
-                  value={editedSong.SortComposer || ''}
-                  onChange={(e) => handleInputChange('SortComposer', e.target.value)}
-                  placeholder="排序作曲家"
-                />
-              </div>
-            </div>
-            <div className="flex items-end bg-white rounded-lg gap-4">
-              <div>
-                <label className="text-gray-500 block mb-1">Performer</label>
-                <Input
-                  value={editedSong.Performer || ''}
-                  onChange={(e) => handleInputChange('Performer', e.target.value)}
-                  placeholder="演奏者"
-                />
-              </div>
-              <div className="flex justify-center">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => convertToPinyin('Performer')}
-                  disabled={loading}
-                  className="w-8 h-8 p-0"
-                >
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-              </div>
-              <div>
-                <label className="text-gray-500 block mb-1">SortPerformer</label>
-                <Input
-                  value={editedSong.SortPerformer || ''}
-                  onChange={(e) => handleInputChange('SortPerformer', e.target.value)}
-                  placeholder="排序演奏者"
-                />
-              </div>
-            </div>
+            <ArtistTagInput
+              label="AlbumArtist"
+              role="albumartist"
+              value={artistChips.albumartist}
+              onChange={artistSetters.albumartist}
+              directory={artistDirectory}
+              directoryReady={directoryReady}
+              disabled={isSaving}
+            />
+            <ArtistTagInput
+              label="Composer"
+              role="composer"
+              value={artistChips.composer}
+              onChange={artistSetters.composer}
+              directory={artistDirectory}
+              directoryReady={directoryReady}
+              disabled={isSaving}
+            />
+            <ArtistTagInput
+              label="Performer"
+              role="performer"
+              value={artistChips.performer}
+              onChange={artistSetters.performer}
+              directory={artistDirectory}
+              directoryReady={directoryReady}
+              disabled={isSaving}
+            />
             <div className="grid grid-cols-2 gap-4 bg-white rounded-lg">
               <div>
                 <label className="text-gray-500 block mb-1">Track Number</label>
