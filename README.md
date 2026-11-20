@@ -111,7 +111,7 @@ On the New page, upload an audio file and follow the steps: review extracted tag
 ### Processing lyrics
 In the tag editor, use the lyrics tool to clean up LRC lyrics. Enable **AI 歌詞整理** under Settings → 整合 and provide an Anthropic API key there or as `ANTHROPIC_TOKEN`.
 
-AI lyrics instructions can be edited in **Settings → 提示詞管理** (`/settings?tab=prompts`), with draft previews, explicit saving, and default restoration. See [prompt management](docs/prompt-management.md) for storage, API, and maintenance details.
+AI lyrics instructions can be edited in **Settings → 整合 → AI 歌詞整理** (`/settings?tab=integrations&integration=ai_lyrics`; the old `?tab=prompts` link redirects there), with draft previews, explicit saving, and default restoration. See [prompt management](docs/prompt-management.md) for storage, API, and maintenance details.
 
 ## Environment Variables
 

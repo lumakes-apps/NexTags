@@ -13,9 +13,11 @@ interface Props {
   onDraftChange: (text: string) => void;
   onSaved: (prompt: LyricsPrompt, submittedText: string) => void;
   onReload: () => void;
+  /** 不能試跑的原因（整合停用或沒有金鑰）；空字串代表可以試跑。提示詞本身一律可編輯。 */
+  previewBlockedReason?: string;
 }
 
-export default function PromptManager({ prompt, draft, loading, loadError, onDraftChange, onSaved, onReload }: Props) {
+export default function PromptManager({ prompt, draft, loading, loadError, onDraftChange, onSaved, onReload, previewBlockedReason = '' }: Props) {
   const [saving, setSaving] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [testLyric, setTestLyric] = useState('');
@@ -44,7 +46,7 @@ export default function PromptManager({ prompt, draft, loading, loadError, onDra
   };
 
   const runPreview = async () => {
-    if (!valid || !testLyric.trim() || previewing) return;
+    if (!valid || !testLyric.trim() || previewing || previewBlockedReason) return;
     const text = draft;
     const lyric = testLyric;
     setPreviewing(true);
@@ -61,10 +63,10 @@ export default function PromptManager({ prompt, draft, loading, loadError, onDra
   };
 
   return (
-    <div className="bg-white rounded-lg shadow p-4 sm:p-6 mb-6 space-y-5">
+    <section className="rounded-xl border bg-white p-4 space-y-5">
       <div>
-        <h2 className="text-xl font-semibold">AI 歌詞整理</h2>
-        <p className="text-sm text-gray-600 mt-2">這份提示詞共用於歌曲標籤編輯與音樂匯入的 AI 歌詞整理。</p>
+        <h3 className="font-medium text-gray-900">提示詞</h3>
+        <p className="text-sm text-gray-600 mt-1">歌曲標籤編輯與音樂匯入的 AI 歌詞整理都使用這份提示詞。停用整合時仍可先編輯、儲存。</p>
       </div>
       {loadError && <p role="alert" className="text-sm text-red-600">{loadError}</p>}
       <div className="flex flex-wrap items-center gap-3 text-sm text-gray-500">
@@ -104,24 +106,26 @@ export default function PromptManager({ prompt, draft, loading, loadError, onDra
       <p className="text-sm text-gray-500">載入預設只會更新草稿；按「儲存提示詞」後才會套用。</p>
       {error && <p role="alert" className="text-sm text-red-600 whitespace-pre-wrap">{error}</p>}
       <div className="border-t pt-5 space-y-3">
-        <h3 className="font-medium">試跑目前草稿</h3>
+        <h4 className="font-medium">試跑目前草稿</h4>
         <p className="text-sm text-gray-600">試跑會呼叫 AI 並產生費用。結果僅供預覽，提示詞與音樂檔都不會儲存。</p>
         <label htmlFor="test-lyric" className="block text-sm font-medium">測試歌詞（原文）</label>
         <Textarea id="test-lyric" value={testLyric} onChange={(event) => setTestLyric(event.target.value)} rows={6} placeholder="貼上少量歌詞來確認整理效果" />
-        <Button variant="outline" onClick={runPreview} disabled={!prompt || loading || !valid || !testLyric.trim() || testLyric.length > MAX_LYRIC_LENGTH || previewing}>
+        <Button variant="outline" onClick={runPreview} disabled={!prompt || loading || !valid || !testLyric.trim() || testLyric.length > MAX_LYRIC_LENGTH || previewing || !!previewBlockedReason}
+          aria-describedby={previewBlockedReason ? 'preview-blocked' : undefined}>
           {previewing ? '試跑中...' : '試跑'}
         </Button>
+        {previewBlockedReason && <p id="preview-blocked" className="text-sm text-gray-600">{previewBlockedReason}</p>}
         {testLyric.length > MAX_LYRIC_LENGTH && <p role="alert" className="text-sm text-red-600">測試歌詞最多 {MAX_LYRIC_LENGTH.toLocaleString()} 字元。</p>}
         {preview && (
           <div className="space-y-2">
             {(preview.text !== draft || preview.lyric !== testLyric) && <p className="text-sm text-amber-700">內容已變更，下方是先前試跑結果，請重新試跑。</p>}
             <div className="grid gap-4 md:grid-cols-2">
-              <div><h4 className="text-sm font-medium mb-2">試跑原文</h4><pre className="rounded bg-gray-50 p-3 text-sm whitespace-pre-wrap break-words">{preview.lyric}</pre></div>
-              <div><h4 className="text-sm font-medium mb-2">試跑結果</h4><pre className="rounded bg-gray-50 p-3 text-sm whitespace-pre-wrap break-words">{preview.result}</pre></div>
+              <div><h5 className="text-sm font-medium mb-2">試跑原文</h5><pre className="rounded bg-gray-50 p-3 text-sm whitespace-pre-wrap break-words">{preview.lyric}</pre></div>
+              <div><h5 className="text-sm font-medium mb-2">試跑結果</h5><pre className="rounded bg-gray-50 p-3 text-sm whitespace-pre-wrap break-words">{preview.result}</pre></div>
             </div>
           </div>
         )}
       </div>
-    </div>
+    </section>
   );
 }

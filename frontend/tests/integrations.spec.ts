@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 
 const field = (name: string, label: string, kind: string, def: unknown = null, options: string[][] = [], group = '設定') => ({ name, label, kind, default: def, help: '', options, group })
 
-function integrationsState(options: { aiAvailable?: boolean; favoritesSync?: boolean; initialized?: boolean } = {}) {
+function integrationsState(options: { aiAvailable?: boolean; aiEnabled?: boolean; favoritesSync?: boolean; initialized?: boolean } = {}) {
     return [
         {
             key: 'navidrome', name: 'Navidrome', description: 'Navidrome 整合', enabled: true, available: true,
@@ -16,7 +16,7 @@ function integrationsState(options: { aiAvailable?: boolean; favoritesSync?: boo
                 favorites: { initialized: !!options.initialized, last: null } },
         },
         {
-            key: 'ai_lyrics', name: 'AI 歌詞整理', description: 'AI', enabled: true, available: !!options.aiAvailable,
+            key: 'ai_lyrics', name: 'AI 歌詞整理', description: 'AI', enabled: options.aiEnabled ?? true, available: !!options.aiAvailable,
             fields: [field('api_key', 'Anthropic API 金鑰', 'secret', null, [], '金鑰')], settings: {},
             secrets: { api_key: options.aiAvailable ? 'database' : null }, master_key_configured: true, status: {},
         },
@@ -132,4 +132,24 @@ test('AI lyrics failures are shown instead of failing silently', async ({ page }
     await page.getByRole('button', { name: 'AI 整理歌詞' }).click()
     await expect(page.getByRole('alert').filter({ hasText: '尚未設定 Anthropic API 金鑰' })).toBeVisible()
     await expect(page.locator("textarea[placeholder='輸入歌詞...']")).toHaveValue('[00:00.00]歌詞')
+})
+
+test('the lyrics prompt lives in the AI lyrics integration and stays editable while it is disabled', async ({ page }) => {
+    await mockApi(page, { aiEnabled: false, aiAvailable: true })
+    await page.goto('/settings?tab=prompts')
+    await expect(page).toHaveURL(/tab=integrations&integration=ai_lyrics/)
+    const nav = page.getByRole('tablist', { name: '設定項目' })
+    await expect(nav.getByRole('tab', { name: '提示詞管理' })).toHaveCount(0)
+    await expect(nav.getByRole('tab', { name: /AI 歌詞整理/ })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByTestId('integration-ai_lyrics')).toBeVisible()
+
+    const editor = page.getByLabel('提示詞', { exact: true })
+    await expect(editor).toBeEnabled()
+    await editor.fill('新的提示詞')
+    await expect(page.getByRole('button', { name: '儲存提示詞' })).toBeEnabled()
+
+    await page.getByLabel('測試歌詞（原文）').fill('[00:01.00]歌詞')
+    const run = page.getByRole('button', { name: '試跑', exact: true })
+    await expect(run).toBeDisabled()
+    await expect(run).toHaveAccessibleDescription('啟用 AI 歌詞整理後才能試跑')
 })

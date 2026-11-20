@@ -88,7 +88,7 @@ def set_config(config_key: str, config_value: Any, description: str = None):
 
 def _check_writable_key(config_key: str):
     if config_key == PROMPT_KEY:
-        raise HTTPException(status_code=422, detail="請透過提示詞管理儲存歌詞提示詞")
+        raise HTTPException(status_code=422, detail="請到設定的「整合 › AI 歌詞整理」儲存歌詞提示詞")
 
 
 @router.get("")
