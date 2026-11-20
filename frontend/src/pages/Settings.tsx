@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useBlocker, useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
-import { FolderInput, Languages, Tag, Trash2, Download, Upload, Settings as SettingsIcon, GripVertical, MessageSquareText } from 'lucide-react';
+import { FolderInput, Languages, Tag, Trash2, Download, Upload, Settings as SettingsIcon, GripVertical, MessageSquareText, Plug } from 'lucide-react';
 import PromptManager from '@/components/settings/PromptManager';
+import IntegrationsPanel from '@/components/settings/IntegrationsPanel';
 import { MAX_PROMPT_LENGTH, promptErrorMessage, type LyricsPrompt } from '@/lib/prompts';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -81,7 +82,7 @@ interface Config {
 
 export default function Settings() {
   const [searchParams] = useSearchParams();
-  const [activeTab, setActiveTab] = useState(searchParams.get('tab') === 'prompts' ? 'prompts' : 'tags');
+  const [activeTab, setActiveTab] = useState(['prompts', 'integrations'].includes(searchParams.get('tab') ?? '') ? searchParams.get('tab')! : 'tags');
   const [prompt, setPrompt] = useState<LyricsPrompt | null>(null);
   const [promptDraft, setPromptDraft] = useState('');
   const [promptLoading, setPromptLoading] = useState(true);
@@ -332,12 +333,16 @@ export default function Settings() {
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className='grid grid-cols-2 sm:grid-cols-4 h-auto gap-1 mb-4'>
+          <TabsList className='grid grid-cols-2 sm:grid-cols-5 h-auto gap-1 mb-4'>
             <TabsTrigger value="tags"><Tag className='size-4 me-2' />支援的標籤</TabsTrigger>
             <TabsTrigger value="languages"><Languages className='size-4 me-2' />支援的語言</TabsTrigger>
             <TabsTrigger value="folders"><FolderInput className='size-4 me-2' />允許的資料夾</TabsTrigger>
             <TabsTrigger value="prompts"><MessageSquareText className='size-4 me-2' />提示詞管理</TabsTrigger>
+            <TabsTrigger value="integrations"><Plug className='size-4 me-2' />整合</TabsTrigger>
           </TabsList>
+          <TabsContent value="integrations">
+            <IntegrationsPanel />
+          </TabsContent>
           <TabsContent value="prompts" forceMount className="data-[state=inactive]:hidden">
             <PromptManager
               prompt={prompt}
@@ -542,7 +547,7 @@ export default function Settings() {
 
 
         {/* 儲存按鈕 */}
-        <div className={`flex justify-end gap-4 ${activeTab === 'prompts' ? 'hidden' : ''}`}>
+        <div className={`flex justify-end gap-4 ${activeTab === 'prompts' || activeTab === 'integrations' ? 'hidden' : ''}`}>
           <Button
             variant="outline"
             onClick={() => {

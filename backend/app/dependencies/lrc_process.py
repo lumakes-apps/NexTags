@@ -1,17 +1,12 @@
 from anthropic import Anthropic
-from config import ANTHROPIC_TOKEN
 from app.dependencies.logger import logger
 from app.services.prompt_service import get_lyrics_prompt
 
 
-client = Anthropic(
-    api_key=ANTHROPIC_TOKEN
-)
-
-
-
 def call_anthropic_api(prompts):
-    """呼叫 Anthropic API"""
+    """呼叫 Anthropic API；金鑰在每次呼叫時由整合設定讀取（未啟用或未設定時拋出 ValueError）"""
+    from app.integrations import ai_lyrics
+    client = Anthropic(api_key=ai_lyrics.api_key())
     message = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=4096,

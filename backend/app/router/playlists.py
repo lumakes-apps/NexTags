@@ -18,7 +18,7 @@ from app.schemas.playlists import (
 from app.dependencies.logger import logger
 from app.dependencies.mp3tag_reader import read_audio_tags
 from app.dependencies.redis_cache import redis_cache
-from app.dependencies.navidrome_hook import request_navidrome_refresh
+from app.integrations import emit_event
 from app.dependencies.database import db, serialize_list, deserialize_list
 from app.services.shared_state import RedisDoc
 from app.router.config import get_config
@@ -945,7 +945,7 @@ def _generate_playlist_m3u_to_file_impl(id: int):
             )
 
         logger.info(f"成功生成 M3U 檔案到: {m3u_file_path}")
-        request_navidrome_refresh(
+        emit_event(
             "playlist_generate_m3u",
             {
                 "playlist_id": id,
@@ -1223,7 +1223,7 @@ def _perform_batch_m3u_generation():
 
         logger.info(f"背景任務完成：清理 {cleaned_files_count} 個舊檔案，成功生成 {success_count} 個，失敗 {error_count} 個")
         if success_count > 0:
-            request_navidrome_refresh(
+            emit_event(
                 "playlist_batch_generate_m3u",
                 {
                     "success_count": success_count,

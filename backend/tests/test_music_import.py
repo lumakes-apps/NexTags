@@ -65,7 +65,7 @@ class ImportEditedTagsTests(unittest.IsolatedAsyncioTestCase):
             patch.object(music_import, 'generate_replaygain', return_value=(True, 'test')),
             patch.object(music_import, 'extract_cover_from_audio', return_value=(False, '')),
             patch.object(music_import, 'redis_cache', None),
-            patch.object(music_import, 'request_navidrome_refresh'),
+            patch.object(music_import, 'emit_event'),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

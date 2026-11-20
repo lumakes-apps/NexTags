@@ -24,7 +24,7 @@ from app.schemas.music_import import (
 from app.dependencies.mp3tag_reader import read_audio_tags
 from app.dependencies.mp3tag_writer import coerce_number, write_tags
 from app.dependencies.redis_cache import redis_cache
-from app.dependencies.navidrome_hook import request_navidrome_refresh
+from app.integrations import emit_event
 from app.dependencies.utils.audio_converter import convert_to_flac
 from app.dependencies.utils.cover_art import save_cover_art, extract_cover_from_audio
 from app.dependencies.utils.replaygain import generate_replaygain
@@ -1261,7 +1261,7 @@ def _confirm_move_sync(temp_path: str, preview_final_path: str, replaygain_appli
     if redis_cache is not None:
         redis_cache.upsert_audio_record(preview_final_path, read_audio_tags(preview_final_path))
 
-    request_navidrome_refresh(
+    emit_event(
         "music_import_confirm_move",
         {"final_path": preview_final_path}
     )

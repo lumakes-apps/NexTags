@@ -40,7 +40,17 @@ Uses the Anthropic Claude API to clean up LRC lyrics. The default instructions b
 - **Redis cache** — tag cache and audio catalog with statistics and rebuild tools on the Cache page
 - **Background jobs** — cache rebuild, batch ReplayGain, and batch M3U generation run in the background with their status kept in Redis; jobs interrupted by a restart are marked as failed and must be started again
 - **Drag-and-drop settings** — reorder music folders, tags, and languages
-- **Navidrome hook** — after a cover change, an import is moved into the library, or M3U files are generated, the backend writes a refresh request file that a host-side watcher can use to trigger a Navidrome rescan (tag-only edits do not write it)
+- **Move files with their tags** — when an edit changes the first artist, album, title or track number, saving offers to move the file to the matching path (only the changed path segment is replaced, one song at a time)
+
+### Integrations
+Optional connections to outside services, switched on and configured under **Settings → 整合**. With an integration off, the core features keep working without it.
+- **Navidrome**
+  - Asks a host-side refresh hook to rescan after cover changes, imports, M3U generation and file moves ([deploy/navidrome-refresh-hook](deploy/navidrome-refresh-hook)).
+  - When you edit tags and move the file, the move waits until Navidrome has scanned the new tags, so play counts, loves and ratings are kept.
+  - Can sync favorites both ways: the NexTags `FAVORITE` tag and Navidrome's starred songs. The first sync shows a preview and lets you choose how to merge. After that, each change goes to the other side automatically.
+- **AI lyrics**: the Claude lyrics cleanup. Without an API key, the button is hidden.
+
+Passwords and API keys are stored encrypted with `NEXTAGS_SECRET_KEY`. They can be written but are never returned by the API or included in config exports.
 
 ## Quick Start
 
@@ -61,7 +71,8 @@ Edit `.env`:
 
 ```env
 MUSIC_ROOT_PATH=/path/to/your/music   # Mounted into the backend as /Music
-ANTHROPIC_TOKEN=                       # Optional, for AI lyrics processing
+NEXTAGS_SECRET_KEY=                    # Encrypts integration secrets (see .env.example)
+ANTHROPIC_TOKEN=                       # Optional, AI lyrics key (can also be set in Settings)
 
 REDIS_HOST=redis                       # Service name in docker-compose
 REDIS_PORT=6379
@@ -98,7 +109,7 @@ On the Playlists page, create a playlist, set filter criteria and sort order, an
 On the New page, upload an audio file and follow the steps: review extracted tags, edit if needed, upload an artist image for new artists, confirm the final location, and generate ReplayGain.
 
 ### Processing lyrics
-In the tag editor, use the lyrics tool to clean up LRC lyrics. Requires `ANTHROPIC_TOKEN` in `.env`.
+In the tag editor, use the lyrics tool to clean up LRC lyrics. Enable **AI 歌詞整理** under Settings → 整合 and provide an Anthropic API key there or as `ANTHROPIC_TOKEN`.
 
 AI lyrics instructions can be edited in **Settings → 提示詞管理** (`/settings?tab=prompts`), with draft previews, explicit saving, and default restoration. See [prompt management](docs/prompt-management.md) for storage, API, and maintenance details.
 
@@ -110,7 +121,9 @@ AI lyrics instructions can be edited in **Settings → 提示詞管理** (`/sett
 | `REDIS_HOST` | Yes | `localhost` | Use `redis` with the bundled compose files |
 | `REDIS_PORT` | Yes | `6379` | |
 | `REDIS_DB` | No | `0` | |
-| `ANTHROPIC_TOKEN` | No | — | Enables AI lyrics processing |
+| `NEXTAGS_SECRET_KEY` | Recommended | — | Fernet key that encrypts secrets saved under Settings → 整合. Without it, secrets can only come from environment variables |
+| `ANTHROPIC_TOKEN` | No | — | AI lyrics key; takes precedence over a key saved in Settings |
+| `NAVIDROME_HOOK_STATUS_FILE` | No | `/app/data/navidrome_status/status.json` | Scan status written by the refresh hook |
 | `SQLITE_DB_PATH` | No | `/app/data/musicmanager.db` | SQLite file for playlists and config |
 | `CORS_ALLOW_ORIGINS` | No | `*` | Comma-separated origins; credentials are only allowed when not `*` |
 | `NAVIDROME_HOOK_REQUEST_FILE` | No | `/app/data/navidrome_refresh/request.json` | Where the Navidrome refresh request is written |

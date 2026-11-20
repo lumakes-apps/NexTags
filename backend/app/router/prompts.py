@@ -24,6 +24,8 @@ def update_lyrics_prompt(update: PromptUpdate):
 def preview_lyrics_prompt(request: PromptPreview):
     try:
         return LyricPressResponse(result=lrc_process(request.lyric, prompt_text=request.text))
+    except ValueError as error:  # AI 歌詞整合未啟用或未設定金鑰
+        raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception:
         logger.exception("AI 歌詞提示詞試跑失敗")
         raise HTTPException(status_code=502, detail="AI 試跑失敗，請稍後重試；提示詞未儲存")
