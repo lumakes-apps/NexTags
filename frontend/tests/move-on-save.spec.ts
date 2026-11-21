@@ -89,7 +89,9 @@ test('escape cancels the save entirely', async ({ page }) => {
     await changeAlbum(page)
     await expect(page.getByRole('dialog')).toBeVisible()
     await page.keyboard.press('Escape')
-    await expect(page.getByRole('dialog')).toHaveCount(0)
+    // 標籤編輯器本身也是對話框：只有移動確認關閉，編輯器維持開啟
+    await expect(page.getByRole('dialog', { name: '要移動檔案嗎？' })).toHaveCount(0)
+    await expect(page.getByRole('dialog', { name: '編輯標籤' })).toBeVisible()
     await expect(page.getByRole('heading', { name: '編輯標籤' })).toBeVisible()
     expect(calls.saves).toHaveLength(0)
 })

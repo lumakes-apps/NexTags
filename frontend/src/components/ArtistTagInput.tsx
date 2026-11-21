@@ -208,7 +208,12 @@ export default function ArtistTagInput({
       event.preventDefault()
       setHighlight(h => Math.max(h - 1, 0))
     } else if (event.key === 'Escape') {
-      // Esc 代表取消：關閉清單並清掉打到一半的文字，避免離開欄位時被自動加成標籤
+      // Esc 代表取消：關閉清單並清掉打到一半的文字，避免離開欄位時被自動加成標籤。
+      // 有東西可取消時攔下 Esc，不讓外層的原生 <dialog>（標籤編輯器）跟著關閉；沒有時才交給對話框
+      if (open || text) {
+        event.preventDefault()
+        event.stopPropagation()
+      }
       setOpen(false)
       setText('')
     } else if (event.key === 'Backspace' && !text && value.length) {

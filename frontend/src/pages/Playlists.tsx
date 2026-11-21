@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import PlaylistEditDialog from '@/components/PlaylistEditDialog';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import TaskStatusDialog from '@/components/TaskStatusDialog';
 import { api } from '@/lib/api';
 import { useGenerateAllM3U } from '@/hooks/useGenerateAllM3U';
@@ -156,7 +157,7 @@ export default function PlaylistsPage() {
   const getSortedPlaylists = () => {
     if (!sortField) return playlists;
 
-    const sorted = [...playlists].sort((a, b) => {
+    const sorted = playlists.toSorted((a, b) => {
       let aValue = '';
       let bValue = '';
 
@@ -610,12 +611,11 @@ export default function PlaylistsPage() {
       />
 
       {/* 刪除確認對話框 */}
-      {deleteConfirmOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+      <Dialog open={deleteConfirmOpen} onOpenChange={(open) => { if (!open) cancelDeletePlaylist() }}>
+          <DialogContent className="max-w-md p-6">
+            <DialogTitle className="mb-4">
               確認刪除播放清單
-            </h3>
+            </DialogTitle>
             <p className="text-gray-600 mb-6">
               您確定要刪除播放清單「{deletingPlaylist?.name}」嗎？
               <br />
@@ -623,6 +623,8 @@ export default function PlaylistsPage() {
             </p>
             <div className="flex justify-end gap-3">
               <button
+                type="button"
+                autoFocus
                 onClick={cancelDeletePlaylist}
                 className="px-4 py-2 text-gray-600 border border-gray-300 rounded hover:bg-gray-50"
               >
@@ -639,20 +641,18 @@ export default function PlaylistsPage() {
                 {loading ? '刪除中...' : '確認刪除'}
               </button>
             </div>
-          </div>
-        </div>
-      )}
+          </DialogContent>
+      </Dialog>
 
       {/* 匯入確認對話框 */}
-      {importConfirmOpen && uploadedFile && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+      <Dialog open={importConfirmOpen && !!uploadedFile} onOpenChange={(open) => { if (!open) cancelImportConfig() }}>
+          <DialogContent className="max-w-md p-6">
+            <DialogTitle className="mb-4">
               確認匯入播放清單配置
-            </h3>
+            </DialogTitle>
             <div className="mb-4 p-3 bg-gray-50 rounded border border-gray-200">
               <p className="text-sm text-gray-600 mb-1">檔案名稱：</p>
-              <p className="text-sm font-medium text-gray-900">{uploadedFile.name}</p>
+              <p className="text-sm font-medium text-gray-900">{uploadedFile?.name}</p>
             </div>
             <div className="mb-6">
               <label className="flex items-center space-x-3 cursor-pointer">
@@ -698,9 +698,8 @@ export default function PlaylistsPage() {
                 {importingConfig ? '匯入中...' : '確認匯入'}
               </button>
             </div>
-          </div>
-        </div>
-      )}
+          </DialogContent>
+      </Dialog>
 
       {/* 任務狀態對話框 */}
       <TaskStatusDialog

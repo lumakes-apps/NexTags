@@ -18,7 +18,7 @@ import {
 } from '@/lib/artists'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { NativeSelect } from '@/components/ui/native-select'
 import { Save, Sparkles, X } from 'lucide-react'
 
 const ARTIST_ROLES: ArtistRole[] = ['artist', 'albumartist', 'composer', 'performer']
@@ -47,6 +47,8 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
     // 未啟用 AI 歌詞整合或未設定金鑰時不顯示整理按鈕
     const aiLyricsAvailable = useIntegrationAvailable('ai_lyrics')
     const titleId = useId()
+    // 其他欄位的 id 前綴（標籤以 htmlFor 對應欄位）
+    const fid = useId()
     // 排序標題由標題自動轉拼音，不手動編輯
     const titleSort = useAutoSort(String(tags.title || ''), String(initialTags?.title || ''), String(initialTags?.titlesort || ''))
     const albumId = useId()
@@ -250,16 +252,18 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
                 {/* 軌道編號 */}
                 <div className="grid grid-cols-2 gap-4">
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">軌道編號</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor={`${fid}-tracknumber`}>軌道編號</label>
                         <Input
+                            id={`${fid}-tracknumber`}
                             value={String(tags.tracknumber || '')}
                             onChange={(e) => handleInputChange('tracknumber', e.target.value)}
                             placeholder="01"
                         />
                     </div>
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">總軌道數</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor={`${fid}-tracktotal`}>總軌道數</label>
                         <Input
+                            id={`${fid}-tracktotal`}
                             value={String(tags.tracktotal || '')}
                             onChange={(e) => handleInputChange('tracktotal', e.target.value)}
                             placeholder="12"
@@ -270,8 +274,9 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
                 {/* 碟片編號 */}
                 <div className="grid grid-cols-2 gap-4">
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">碟片編號</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor={`${fid}-discnumber`}>碟片編號</label>
                         <Input
+                            id={`${fid}-discnumber`}
                             value={String(tags.discnumber || '')}
                             onChange={(e) => handleInputChange('discnumber', e.target.value)}
                             placeholder="1"
@@ -279,8 +284,9 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
                         />
                     </div>
                     <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">碟片總數</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor={`${fid}-disctotal`}>碟片總數</label>
                         <Input
+                            id={`${fid}-disctotal`}
                             value={String(tags.disctotal || '')}
                             onChange={(e) => handleInputChange('disctotal', e.target.value)}
                             placeholder="2"
@@ -292,8 +298,8 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
 
             {/* 流派標籤 */}
             <div>
-                <label className="block text-sm font-medium text-gray-700 mb-3">流派標籤</label>
-                <div className="flex flex-wrap gap-2">
+                <p id={`${fid}-genre`} className="block text-sm font-medium text-gray-700 mb-3">流派標籤</p>
+                <div role="group" aria-labelledby={`${fid}-genre`} className="flex flex-wrap gap-2">
                     {availableTags.map((tag) => {
                         const currentGenres = Array.isArray(tags.genre) ? tags.genre : []
                         const isSelected = currentGenres.includes(tag)
@@ -302,6 +308,7 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
                                 key={tag}
                                 type="button"
                                 onClick={() => handleGenreToggle(tag)}
+                                aria-pressed={isSelected}
                                 className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${isSelected
                                     ? 'bg-blue-600 text-white'
                                     : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
@@ -316,28 +323,24 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
 
             {/* 語言 */}
             <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">語言</label>
-                <Select
+                <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor={`${fid}-language`}>語言</label>
+                <NativeSelect
+                    id={`${fid}-language`}
                     value={String(tags.language || '')}
-                    onValueChange={(value) => handleInputChange('language', value)}
+                    onChange={(e) => handleInputChange('language', e.target.value)}
                 >
-                    <SelectTrigger className="w-full">
-                        <SelectValue placeholder="請選擇語言" />
-                    </SelectTrigger>
-                    <SelectContent>
-                        {Object.entries(languages).map(([code, name]) => (
-                            <SelectItem key={code} value={code}>
-                                {name}
-                            </SelectItem>
-                        ))}
-                    </SelectContent>
-                </Select>
+                    {!tags.language && <option value="" disabled>請選擇語言</option>}
+                    {Object.entries(languages).map(([code, name]) => (
+                        <option key={code} value={code}>{name}</option>
+                    ))}
+                </NativeSelect>
             </div>
 
             {/* 備註 */}
             <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">備註</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor={`${fid}-comment`}>備註</label>
                 <textarea
+                    id={`${fid}-comment`}
                     value={String(tags.comment || '')}
                     onChange={(e) => handleInputChange('comment', e.target.value)}
                     placeholder="輸入備註..."
@@ -348,13 +351,14 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
 
             {/* ReplayGain (自動生成，僅顯示) */}
             <div>
-                <label className="block text-sm font-medium text-gray-700 mb-3">
+                <p className="block text-sm font-medium text-gray-700 mb-3">
                     ReplayGain <span className="text-xs text-gray-500">(已在上傳時自動生成)</span>
-                </label>
+                </p>
                 <div className="grid grid-cols-2 gap-4">
                     <div>
-                        <label className="block text-sm font-medium text-gray-500 mb-1">Track Gain</label>
+                        <label className="block text-sm font-medium text-gray-500 mb-1" htmlFor={`${fid}-replaygain_track_gain`}>Track Gain</label>
                         <Input
+                            id={`${fid}-replaygain_track_gain`}
                             value={String(tags.replaygain_track_gain || '')}
                             readOnly
                             placeholder="未設定"
@@ -362,8 +366,9 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
                         />
                     </div>
                     <div>
-                        <label className="block text-sm font-medium text-gray-500 mb-1">Track Peak</label>
+                        <label className="block text-sm font-medium text-gray-500 mb-1" htmlFor={`${fid}-replaygain_track_peak`}>Track Peak</label>
                         <Input
+                            id={`${fid}-replaygain_track_peak`}
                             value={String(tags.replaygain_track_peak || '')}
                             readOnly
                             placeholder="未設定"
@@ -376,7 +381,7 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
             {/* 歌詞 */}
             <div>
                 <div className="flex items-center justify-between mb-1">
-                    <label className="block text-sm font-medium text-gray-700">歌詞</label>
+                    <label className="block text-sm font-medium text-gray-700" htmlFor={`${fid}-lyrics`}>歌詞</label>
                     {aiLyricsAvailable && (
                         <Button
                             variant="outline"
@@ -393,6 +398,7 @@ export default function MusicImportTagEditor({ filePath, initialTags, onSave, on
                 </div>
                 {lyricsError && <p role="alert" className="text-sm text-red-600">{lyricsError}</p>}
                 <textarea
+                    id={`${fid}-lyrics`}
                     value={String(tags.lyrics || '')}
                     onChange={(e) => handleInputChange('lyrics', e.target.value)}
                     placeholder="輸入歌詞..."

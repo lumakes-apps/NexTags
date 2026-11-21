@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { NativeSelect } from '@/components/ui/native-select';
 import { Search, Heart, Edit, Plus, RefreshCcw, Edit3, ListMusic } from 'lucide-react';
 import TagEditor from '@/components/TagEditor';
 import { api } from '@/lib/api';
@@ -290,40 +290,34 @@ export default function Home() {
             <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
               <div className="md:col-span-2">
                 <Input
+                  type="search"
+                  aria-label="搜尋歌曲標題"
                   placeholder="搜尋歌曲標題..."
                   value={searchTitle}
                   onChange={(e) => setSearchTitle(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                 />
               </div>
-              <Select
-                value={selectedFolder || 'ALL'}
-                onValueChange={(value) => setSelectedFolder(value === 'ALL' ? '' : value)}
+              <NativeSelect
+                aria-label="資料夾篩選"
+                value={selectedFolder}
+                onChange={(e) => setSelectedFolder(e.target.value)}
               >
-                <SelectTrigger>
-                  <SelectValue placeholder="所有資料夾" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="ALL">所有資料夾</SelectItem>
-                  {allowFolders.map(folder => (
-                    <SelectItem key={folder} value={folder}>{folder}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select
-                value={selectedLanguage || 'ALL'}
-                onValueChange={(value) => setSelectedLanguage(value === 'ALL' ? '' : value)}
+                <option value="">所有資料夾</option>
+                {allowFolders.map(folder => (
+                  <option key={folder} value={folder}>{folder}</option>
+                ))}
+              </NativeSelect>
+              <NativeSelect
+                aria-label="語言篩選"
+                value={selectedLanguage}
+                onChange={(e) => setSelectedLanguage(e.target.value)}
               >
-                <SelectTrigger>
-                  <SelectValue placeholder="所有語言" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="ALL">所有語言</SelectItem>
-                  {Object.entries(supportedLanguages).map(([code, name]) => (
-                    <SelectItem key={code} value={code}>{name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                <option value="">所有語言</option>
+                {Object.entries(supportedLanguages).map(([code, name]) => (
+                  <option key={code} value={code}>{name}</option>
+                ))}
+              </NativeSelect>
               <Button
                 variant={showFavorites ? 'default' : 'outline'}
                 onClick={() => {

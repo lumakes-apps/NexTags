@@ -1,28 +1,50 @@
 import * as React from "react"
 import { cn } from "@/lib/utils"
 import { X } from "lucide-react"
+import { isOutside, supportsClosedBy, useModalDialog } from "@/lib/dialog"
 
 interface DialogProps {
     open: boolean
     onOpenChange: (open: boolean) => void
     children: React.ReactNode
+    /** 點背景可關閉（預設是）；Esc 一律可關閉 */
+    dismissible?: boolean
 }
 
-export function Dialog({ open, onOpenChange, children }: DialogProps) {
-    if (!open) return null
+const DialogTitleIdContext = React.createContext<string | undefined>(undefined)
+
+/**
+ * 原生 modal <dialog>：瀏覽器提供 dialog 語意、焦點限制、Esc 關閉、背景 inert 與關閉後焦點回到原按鈕。
+ * 以 DialogTitle 自動命名；關閉時才卸載內容（與先前行為相同）。
+ */
+export function Dialog({ open, onOpenChange, children, dismissible = true }: DialogProps) {
+    const titleId = React.useId()
+    const openRef = React.useRef(open)
+    openRef.current = open
+    const pressedOutside = React.useRef(false)
+    const { setRef } = useModalDialog(open)
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-            {/* Backdrop */}
-            <div
-                className="fixed inset-0 bg-black/50"
-                onClick={() => onOpenChange(false)}
-            />
-            {/* Dialog content */}
-            <div className="relative z-10 w-full max-w-lg mx-4">
-                {children}
-            </div>
-        </div>
+        <dialog
+            ref={setRef}
+            aria-labelledby={titleId}
+            {...({ closedby: dismissible ? "any" : "closerequest" } as object)}
+            // Esc、點背景（closedby）或程式關閉後，同步回 React 狀態
+            // React 的合成事件會讓內層對話框的 close 冒泡上來，只處理自己的
+            onClose={event => { if (event.target === event.currentTarget && openRef.current) onOpenChange(false) }}
+            onPointerDown={event => {
+                pressedOutside.current = dismissible && !supportsClosedBy && isOutside(event, event.currentTarget)
+            }}
+            onPointerUp={event => {
+                if (pressedOutside.current && isOutside(event, event.currentTarget)) event.currentTarget.close()
+                pressedOutside.current = false
+            }}
+            className="m-auto max-h-none max-w-none overflow-visible border-0 bg-transparent p-0 backdrop:bg-black/50"
+        >
+            <DialogTitleIdContext.Provider value={titleId}>
+                {open && children}
+            </DialogTitleIdContext.Provider>
+        </dialog>
     )
 }
 
@@ -32,7 +54,7 @@ export function DialogContent({ className, children, ...props }: DialogContentPr
     return (
         <div
             className={cn(
-                "bg-white rounded-lg shadow-lg p-4 max-h-[90vh] overflow-y-auto",
+                "w-[calc(100vw-2rem)] max-w-lg bg-white rounded-lg shadow-lg p-4 max-h-[90vh] overflow-y-auto",
                 className
             )}
             {...props}
@@ -58,8 +80,10 @@ export function DialogHeader({ className, children, ...props }: DialogHeaderProp
 type DialogTitleProps = React.ComponentProps<"h2">
 
 export function DialogTitle({ className, children, ...props }: DialogTitleProps) {
+    const titleId = React.useContext(DialogTitleIdContext)
     return (
         <h2
+            id={titleId}
             className={cn("text-lg font-semibold text-gray-900", className)}
             {...props}
         >
@@ -88,6 +112,8 @@ interface DialogCloseProps {
 export function DialogClose({ onClose }: DialogCloseProps) {
     return (
         <button
+            type="button"
+            aria-label="關閉"
             onClick={onClose}
             className="text-gray-400 hover:text-gray-600 transition-colors"
         >

@@ -250,12 +250,12 @@ export default function Cache() {
                     <p className="text-gray-600 mb-6">
                         系統目前沒有設定任何音樂資料夾。請先到系統設定頁面新增允許的音樂資料夾，才能使用快取功能。
                     </p>
-                    <a
-                        href="/settings"
+                    <Link
+                        to="/settings?tab=folders"
                         className="inline-block px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
                     >
                         前往系統設定
-                    </a>
+                    </Link>
                 </div>
             ) : statistics && (
                 <div className="space-y-8">
@@ -370,6 +370,7 @@ export default function Cache() {
                         <Button
                             variant="outline"
                             className="flex-1"
+                            autoFocus
                             onClick={() => {
                                 setShowDeleteConfirm(false);
                                 setFileToDelete(null);
