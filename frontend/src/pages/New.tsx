@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useBlocker, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { NativeSelect } from '@/components/ui/native-select'
 import MusicImportTagEditor from '@/components/MusicImportTagEditor'
 import { api } from '@/lib/api'
 import {
@@ -594,8 +594,11 @@ export default function NewMusicPage() {
 
     // 從快取頁的「繼續」進來：/new?resume=<file_id>
     const resumeParam = searchParams.get('resume')
+    // 同一個 resume 參數只處理一次（清單可能載入兩次，網址參數清掉前 effect 會再跑），避免同一步驟被執行兩次
+    const handledResume = useRef<string | null>(null)
     useEffect(() => {
-        if (!resumeParam || pendingImports.length === 0) return
+        if (!resumeParam || pendingImports.length === 0 || handledResume.current === resumeParam) return
+        handledResume.current = resumeParam
         const target = pendingImports.find(item => item.file_id === resumeParam)
         setSearchParams({}, { replace: true })
         // 進度遺失的要先選目標資料夾，留在清單上讓使用者選
@@ -689,15 +692,15 @@ export default function NewMusicPage() {
                                             {item.needs_base_folder && (
                                                 <label className="mt-1 flex items-center gap-2 text-sm text-gray-700">
                                                     目標資料夾
-                                                    <select
+                                                    <NativeSelect
                                                         value={folder}
                                                         onChange={event => setRecoverFolders(prev => ({ ...prev, [item.file_id]: event.target.value }))}
-                                                        className="rounded-md border border-gray-300 bg-white px-2 py-1 text-sm"
+                                                        className="h-8 w-auto"
                                                     >
                                                         {baseFolders.map(option => (
                                                             <option key={option.value} value={option.value}>{option.label}</option>
                                                         ))}
-                                                    </select>
+                                                    </NativeSelect>
                                                 </label>
                                             )}
                                         </div>
@@ -746,23 +749,17 @@ export default function NewMusicPage() {
                     <CardContent>
                         <div className="space-y-4">
                             <div>
-                                <label className="block text-sm font-medium mb-2">目標資料夾</label>
-                                <Select value={selectedBaseFolder} onValueChange={setSelectedBaseFolder}>
-                                    <SelectTrigger className="w-full">
-                                        <SelectValue placeholder="選擇目標資料夾" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {baseFolders.map((folder) => (
-                                            <SelectItem key={folder.value} value={folder.value}>
-                                                {folder.label}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
+                                <label htmlFor="import-base-folder" className="block text-sm font-medium mb-2">目標資料夾</label>
+                                <NativeSelect id="import-base-folder" value={selectedBaseFolder}
+                                    onChange={(e) => setSelectedBaseFolder(e.target.value)}>
+                                    {baseFolders.map((folder) => (
+                                        <option key={folder.value} value={folder.value}>{folder.label}</option>
+                                    ))}
+                                </NativeSelect>
                             </div>
 
                             <div>
-                                <label className="block text-sm font-medium mb-2">選擇音樂檔案</label>
+                                <label htmlFor="file-upload" className="block text-sm font-medium mb-2">選擇音樂檔案</label>
                                 <div
                                     onDragOver={handleDragOver}
                                     onDragLeave={handleDragLeave}

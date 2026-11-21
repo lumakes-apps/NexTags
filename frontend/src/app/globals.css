@@ -125,3 +125,28 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* 原生 modal <dialog>：避免在對話框或背景上捲動時帶動後面的頁面 */
+dialog:modal {
+  overscroll-behavior: contain;
+}
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+/* 通知容器放在 top layer（popover），開著對話框時才不會被遮住；本身不攔截點擊 */
+.toaster-host {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: visible;
+  pointer-events: none;
+}
+.toaster-host [data-sonner-toast] {
+  pointer-events: auto;
+}

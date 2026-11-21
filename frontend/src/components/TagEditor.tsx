@@ -17,7 +17,9 @@ import {
 } from '@/lib/artists';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { NativeSelect } from '@/components/ui/native-select';
+import { useModalDialog } from '@/lib/dialog';
+import { toast } from 'sonner';
 import { Switch } from '@/components/ui/switch';
 import { X, Save, Upload, Image as ImageIcon, Sparkles, AudioLines } from 'lucide-react';
 
@@ -88,6 +90,8 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
   // 未啟用 AI 歌詞整合或未設定金鑰時不顯示整理按鈕
   const aiLyricsAvailable = useIntegrationAvailable('ai_lyrics');
   const titleId = useId();
+  // 其他欄位的 id 前綴（標籤以 htmlFor 對應欄位）
+  const fid = useId();
   // 排序標題由標題自動轉拼音，不手動編輯
   const titleSort = useAutoSort(editedSong?.Title ?? '', song?.Title ?? '', song?.SortTitle ?? '');
   const albumId = useId();
@@ -197,6 +201,9 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
     fetchTags();
   }, []);
 
+  // 元件一直掛載、沒有歌曲時不渲染：以「是否正在編輯」決定開關，<dialog> 出現後才會呼叫 showModal()
+  const { setRef: setDialogRef } = useModalDialog(Boolean(song && editedSong));
+
   if (!song || !editedSong) return null;
 
   const handleInputChange = (field: keyof Song, value: string | string[]) => {
@@ -304,11 +311,11 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
           }
         }
       } else {
-        alert(`ReplayGain 生成失敗: ${data.message || '未知錯誤'}`);
+        toast.error(`ReplayGain 生成失敗：${data.message || '未知錯誤'}`);
       }
     } catch (error) {
       console.error('ReplayGain generation failed:', error);
-      alert('生成 ReplayGain 時發生錯誤');
+      toast.error('生成 ReplayGain 時發生錯誤');
     } finally {
       setGeneratingReplayGain(false);
     }
@@ -384,13 +391,21 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex justify-end backdrop-blur-md"
-      style={{ backgroundColor: 'rgba(0, 0, 0, 0.3)' }}
+    // 原生 modal <dialog> 做成右側抽屜：焦點限制在編輯器內、Esc 關閉（儲存中除外）、背後頁面 inert
+    <dialog
+      ref={setDialogRef}
+      aria-labelledby={`${fid}-heading`}
+      onCancel={(e) => {
+        // React 的合成事件會從內層對話框（移動確認）一路冒泡上來，只處理自己的 cancel
+        if (e.target !== e.currentTarget) return;
+        e.preventDefault();
+        if (!isSaving) onClose();
+      }}
+      className="m-0 ml-auto h-dvh max-h-none w-128 max-w-full border-0 bg-white p-0 shadow-xl backdrop:bg-black/30 backdrop:backdrop-blur-md"
     >
-      <div className="bg-white w-128 h-full shadow-xl flex flex-col">
+      <div className="h-full flex flex-col">
         <div className="flex items-center justify-between p-4 border-b bg-white">
-          <h2 className="text-lg font-semibold">編輯標籤</h2>
+          <h2 id={`${fid}-heading`} className="text-lg font-semibold">編輯標籤</h2>
           <Button variant="ghost" size="sm" onClick={onClose} disabled={isSaving} aria-label="關閉標籤編輯器">
             <X className="h-4 w-4" />
           </Button>
@@ -399,7 +414,7 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
         <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
           <div className="border p-4 rounded-xl bg-white">
             <h3 className="font-medium text-gray-900 mb-3">Path</h3>
-            <label className="text-sm text-gray-500 block mb-1">{editedSong.FilePath}</label>
+            <p className="text-sm text-gray-500 mb-1 break-all">{editedSong.FilePath}</p>
             {pendingMove && (
               <div
                 role="status"
@@ -418,35 +433,30 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
             )}
           </div>
           <div className="border p-4 rounded-xl bg-white gap-2">
+            {/* 拖放區包著一個真正的按鈕（可用鍵盤操作）；取消更換的按鈕放在旁邊，避免按鈕包按鈕 */}
             <div
-              className={`aspect-square max-w-[240px] shadow-lg mx-auto rounded-2xl cursor-pointer transition-all duration-200 ${isDragOver
+              className={`relative aspect-square max-w-[240px] shadow-lg mx-auto rounded-2xl transition-all duration-200 ${isDragOver
                 ? 'border-2 border-dashed border-blue-400 bg-blue-50'
                 : 'bg-gray-500 hover:bg-gray-400'
                 }`}
-              onClick={handleImageClick}
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
             >
+              <button
+                type="button"
+                onClick={handleImageClick}
+                disabled={isSaving || isReadingCover}
+                aria-label={coverImage ? '更換封面圖片' : '上傳封面圖片'}
+                aria-describedby={`${fid}-cover-hint`}
+                className="block w-full h-full rounded-2xl cursor-pointer outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              >
               {coverImage ? (
-                <div className="relative w-full h-full">
                   <img
                     src={coverImage}
                     alt="Album Cover"
                     className="w-full h-full object-cover rounded-2xl"
                   />
-                  {editedSong.Cover.startsWith('data:') && <button
-                    aria-label="取消更換封面"
-                    disabled={isSaving || isReadingCover}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removeCoverImage();
-                    }}
-                    className="absolute top-2 right-2 bg-gray-500 hover:bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center transition-colors"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>}
-                </div>
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center text-white">
                   {isDragOver ? (
@@ -462,6 +472,16 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
                   )}
                 </div>
               )}
+              </button>
+                  {coverImage && editedSong.Cover.startsWith('data:') && <button
+                    aria-label="取消更換封面"
+                    disabled={isSaving || isReadingCover}
+                    type="button"
+                    onClick={removeCoverImage}
+                    className="absolute top-2 right-2 bg-gray-500 hover:bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center transition-colors"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>}
             </div>
             <input
               ref={fileInputRef}
@@ -471,9 +491,9 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
               onChange={handleImageChange}
               className="hidden"
             />
-            <label className="text-xs text-center text-gray-500 block mt-2">
+            <p id={`${fid}-cover-hint`} className="text-xs text-center text-gray-500 mt-2">
               {coverImage ? '點擊更換圖片或拖放新圖片' : '點擊圖片上傳或拖放圖片'}
-            </label>
+            </p>
             {editedSong.Cover.startsWith('data:') && <p role="status" className="text-sm text-center mt-2">封面尚未儲存，請點擊「保存變更」</p>}
           </div>
           <div className="border p-4 rounded-xl bg-white grid gap-4">
@@ -541,8 +561,9 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
             />
             <div className="grid grid-cols-2 gap-4 bg-white rounded-lg">
               <div>
-                <label className="text-gray-500 block mb-1">Track Number</label>
+                <label className="text-gray-500 block mb-1" htmlFor={`${fid}-tracknumber`}>Track Number</label>
                 <Input
+                  id={`${fid}-tracknumber`}
                   value={editedSong.TrackNumber || ''}
                   onChange={(e) => handleInputChange('TrackNumber', e.target.value)}
                   placeholder="曲目編號"
@@ -550,8 +571,9 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
                 />
               </div>
               <div>
-                <label className="text-gray-500 block mb-1">Track Total</label>
+                <label className="text-gray-500 block mb-1" htmlFor={`${fid}-tracktotal`}>Track Total</label>
                 <Input
+                  id={`${fid}-tracktotal`}
                   value={editedSong.TrackTotal || ''}
                   onChange={(e) => handleInputChange('TrackTotal', e.target.value)}
                   placeholder="曲目總數"
@@ -561,8 +583,9 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
             </div>
             <div className="grid grid-cols-2 gap-4 bg-white rounded-lg">
               <div>
-                <label className="text-gray-500 block mb-1">Disc Number</label>
+                <label className="text-gray-500 block mb-1" htmlFor={`${fid}-discnumber`}>Disc Number</label>
                 <Input
+                  id={`${fid}-discnumber`}
                   value={editedSong.DiscNumber || ''}
                   onChange={(e) => handleInputChange('DiscNumber', e.target.value)}
                   placeholder="碟片編號"
@@ -570,8 +593,9 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
                 />
               </div>
               <div>
-                <label className="text-gray-500 block mb-1">Disc Total</label>
+                <label className="text-gray-500 block mb-1" htmlFor={`${fid}-disctotal`}>Disc Total</label>
                 <Input
+                  id={`${fid}-disctotal`}
                   value={editedSong.DiscTotal || ''}
                   onChange={(e) => handleInputChange('DiscTotal', e.target.value)}
                   placeholder="碟片總數"
@@ -580,8 +604,8 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
               </div>
             </div>
             <div>
-              <label className="text-gray-500 block mb-3">Genre</label>
-              <div className="flex flex-wrap gap-2">
+              <p id={`${fid}-genre`} className="text-gray-500 mb-3">Genre</p>
+              <div role="group" aria-labelledby={`${fid}-genre`} className="flex flex-wrap gap-2">
                 {availableTags.map((tag) => {
                   const isSelected = editedSong.Genre?.includes(tag) || false;
                   return (
@@ -589,6 +613,7 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
                       key={tag}
                       type="button"
                       onClick={() => handleTagToggle(tag)}
+                      aria-pressed={isSelected}
                       className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${isSelected
                         ? 'bg-gray-800 text-white'
                         : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
@@ -601,27 +626,23 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
               </div>
             </div>
             <div>
-              <label className="text-gray-500 block mb-1">Language</label>
-              <Select
-                value={editedSong.Language}
-                onValueChange={(value) => handleInputChange('Language', value)}
+              <label className="text-gray-500 block mb-1" htmlFor={`${fid}-language`}>Language</label>
+              <NativeSelect
+                id={`${fid}-language`}
+                value={editedSong.Language || ''}
+                onChange={(e) => handleInputChange('Language', e.target.value)}
               >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="請選擇語言" />
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.entries(languages).map(([code, name]) => (
-                    <SelectItem key={code} value={code}>
-                      {name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                {!editedSong.Language && <option value="" disabled>請選擇語言</option>}
+                {Object.entries(languages).map(([code, name]) => (
+                  <option key={code} value={code}>{name}</option>
+                ))}
+              </NativeSelect>
             </div>
             <div>
-              <label className="text-gray-500 block mb-3">Favorite</label>
+              <label className="text-gray-500 block mb-3" htmlFor={`${fid}-favorite`}>Favorite</label>
               <div className="flex items-center space-x-2">
                 <Switch
+                  id={`${fid}-favorite`}
                   checked={editedSong.Favorite === 'True'}
                   onCheckedChange={(checked) => handleInputChange('Favorite', checked ? 'True' : 'False')}
                 />
@@ -631,8 +652,9 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
               </div>
             </div>
             <div>
-              <label className="text-gray-500 block mb-1">備註 (Comment)</label>
+              <label className="text-gray-500 block mb-1" htmlFor={`${fid}-comment`}>備註 (Comment)</label>
               <textarea
+                id={`${fid}-comment`}
                 value={editedSong.Comment || ''}
                 onChange={(e) => handleInputChange('Comment', e.target.value)}
                 placeholder="輸入備註或評論..."
@@ -644,7 +666,7 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
           {/* ReplayGain Section */}
           <div className="bg-white rounded-lg border p-4 space-y-3">
             <div className="flex items-center justify-between mb-3">
-              <label className="text-gray-700 font-medium">ReplayGain</label>
+              <h3 className="text-gray-700 font-medium">ReplayGain</h3>
               <Button
                 variant="clear"
                 size="sm"
@@ -658,8 +680,9 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-gray-500 text-sm block mb-1">Track Gain</label>
+                <label className="text-gray-500 text-sm block mb-1" htmlFor={`${fid}-replaygaintrackgain`}>Track Gain</label>
                 <Input
+                  id={`${fid}-replaygaintrackgain`}
                   value={editedSong.ReplayGainTrackGain || ''}
                   readOnly
                   placeholder="未設定"
@@ -667,8 +690,9 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
                 />
               </div>
               <div>
-                <label className="text-gray-500 text-sm block mb-1">Track Peak</label>
+                <label className="text-gray-500 text-sm block mb-1" htmlFor={`${fid}-replaygaintrackpeak`}>Track Peak</label>
                 <Input
+                  id={`${fid}-replaygaintrackpeak`}
                   value={editedSong.ReplayGainTrackPeak || ''}
                   readOnly
                   placeholder="未設定"
@@ -681,7 +705,7 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
           <div className="bg-white rounded-lg border p-4 space-y-3">
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-gray-500">歌詞 (Lyrics)</label>
+                <label className="text-gray-500" htmlFor={`${fid}-lyrics`}>歌詞 (Lyrics)</label>
                 {aiLyricsAvailable && (
                   <Button
                     variant="clear"
@@ -698,6 +722,7 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
               </div>
               {lyricsError && <p role="alert" className="text-sm text-red-600 mt-1">{lyricsError}</p>}
               <textarea
+                id={`${fid}-lyrics`}
                 value={editedSong.Lyrics || ''}
                 onChange={(e) => handleInputChange('Lyrics', e.target.value)}
                 placeholder="輸入歌詞..."
@@ -717,6 +742,6 @@ export default function TagEditor({ song, onClose, onSave }: TagEditorProps) {
           </Button>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }

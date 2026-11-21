@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ArrowLeft, Download, ArrowUpDown } from 'lucide-react';
 import { api } from '@/lib/api';
+import { toast } from 'sonner';
 
 interface SongWithDate {
     file_path: string | null;
@@ -84,11 +85,11 @@ export default function PlaylistDetailPage() {
                 window.URL.revokeObjectURL(url);
             } else {
                 const errorData = await response.json();
-                alert(`下載失敗：${errorData.message}`);
+                toast.error(`下載失敗：${errorData.message || '未知錯誤'}`);
             }
         } catch (error) {
             console.error('下載錯誤:', error);
-            alert('下載過程中發生錯誤');
+            toast.error('下載過程中發生錯誤');
         } finally {
             setDownloadLoading(false);
         }

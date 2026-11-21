@@ -1,13 +1,36 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useId } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogClose, DialogFooter } from '@/components/ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { NativeSelect } from '@/components/ui/native-select';
 import { Switch } from '@/components/ui/switch';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { Info, Save } from 'lucide-react';
+import { Save } from 'lucide-react';
+
+/** 2～3 個互斥選項：直接列出的單選按鈕，比收在下拉選單裡好選 */
+function RadioChoices<T extends string>({ legend, name, value, options, onChange }: {
+    legend: string;
+    name: string;
+    value: T;
+    options: [T, string][];
+    onChange: (value: T) => void;
+}) {
+    return (
+        <fieldset>
+            <legend className="text-sm font-medium text-gray-700 mb-2">{legend}</legend>
+            <div className="flex flex-wrap gap-x-5 gap-y-2">
+                {options.map(([optionValue, label]) => (
+                    <label key={optionValue} className="flex items-center gap-2 text-sm text-gray-800">
+                        <input type="radio" name={name} value={optionValue} checked={value === optionValue}
+                            onChange={() => onChange(optionValue)} className="size-4 accent-gray-900" />
+                        {label}
+                    </label>
+                ))}
+            </div>
+        </fieldset>
+    );
+}
 
 interface SmartPlaylist {
     name: string;
@@ -44,6 +67,8 @@ export default function PlaylistEditDialog({
     onSave,
     isCreate = false
 }: PlaylistEditDialogProps) {
+    // 欄位 id 前綴（標籤以 htmlFor 對應欄位）
+    const fid = useId();
     const [editedPlaylist, setEditedPlaylist] = useState<Partial<SmartPlaylist>>({});
     const [loading, setLoading] = useState(false);
     const [languages, setLanguages] = useState<Record<string, string>>({});
@@ -198,8 +223,9 @@ export default function PlaylistEditDialog({
                 <div className="space-y-4 max-h-[60vh] overflow-y-auto px-2">
                     {/* 播放清單名稱 */}
                     <div>
-                        <label className="text-sm font-medium text-gray-700 block mb-2">Title</label>
+                        <label className="text-sm font-medium text-gray-700 block mb-2" htmlFor={`${fid}-name`}>Title</label>
                         <Input
+                            id={`${fid}-name`}
                             value={editedPlaylist.name || ''}
                             onChange={(e) => handleInputChange('name', e.target.value)}
                             placeholder="播放清單名稱"
@@ -209,28 +235,23 @@ export default function PlaylistEditDialog({
 
                     {/* BaseFolder */}
                     <div>
-                        <label className="text-sm font-medium text-gray-700 block mb-2">BaseFolder</label>
-                        <Select
+                        <label className="text-sm font-medium text-gray-700 block mb-2" htmlFor={`${fid}-base-folder`}>BaseFolder</label>
+                        <NativeSelect
+                            id={`${fid}-base-folder`}
                             value={editedPlaylist.base_folder || ''}
-                            onValueChange={(value) => handleInputChange('base_folder', value)}
+                            onChange={(e) => handleInputChange('base_folder', e.target.value)}
                         >
-                            <SelectTrigger className="w-full">
-                                <SelectValue placeholder="選擇基礎資料夾" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {baseFolders.map((folder) => (
-                                    <SelectItem key={folder} value={folder}>
-                                        {folder}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
+                            {!editedPlaylist.base_folder && <option value="" disabled>選擇基礎資料夾</option>}
+                            {baseFolders.map((folder) => (
+                                <option key={folder} value={folder}>{folder}</option>
+                            ))}
+                        </NativeSelect>
                     </div>
 
                     {/* Tags / Genre (標籤) */}
                     <div>
-                        <label className="text-sm font-medium text-gray-700 block mb-3">Tags / Genre (標籤)</label>
-                        <div className="flex flex-wrap gap-2">
+                        <p id={`${fid}-tags`} className="text-sm font-medium text-gray-700 mb-3">Tags / Genre (標籤)</p>
+                        <div role="group" aria-labelledby={`${fid}-tags`} className="flex flex-wrap gap-2">
                             {availableTags
                                 .filter(tag => !editedPlaylist.exclude_tags?.includes(tag))
                                 .map((tag) => {
@@ -240,6 +261,7 @@ export default function PlaylistEditDialog({
                                             key={tag}
                                             type="button"
                                             onClick={() => handleTagToggle(tag)}
+                                            aria-pressed={isSelected}
                                             className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${isSelected
                                                 ? 'bg-gray-800 text-white'
                                                 : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
@@ -257,8 +279,8 @@ export default function PlaylistEditDialog({
 
                     {/* Exclude Tags (排除標籤) */}
                     <div>
-                        <label className="text-sm font-medium text-gray-700 block mb-3">Exclude Tags (排除標籤)</label>
-                        <div className="flex flex-wrap gap-2">
+                        <p id={`${fid}-exclude-tags`} className="text-sm font-medium text-gray-700 mb-3">Exclude Tags (排除標籤)</p>
+                        <div role="group" aria-labelledby={`${fid}-exclude-tags`} className="flex flex-wrap gap-2">
                             {availableTags
                                 .filter(tag => !editedPlaylist.filter_tags?.includes(tag))
                                 .map((tag) => {
@@ -268,6 +290,7 @@ export default function PlaylistEditDialog({
                                             key={tag}
                                             type="button"
                                             onClick={() => handleExcludeTagToggle(tag)}
+                                            aria-pressed={isSelected}
                                             className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${isSelected
                                                 ? 'bg-red-600 text-white'
                                                 : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
@@ -285,8 +308,8 @@ export default function PlaylistEditDialog({
 
                     {/* Language (語言) */}
                     <div>
-                        <label className="text-sm font-medium text-gray-700 block mb-3">Language (語言)</label>
-                        <div className="flex flex-wrap gap-2">
+                        <p id={`${fid}-language`} className="text-sm font-medium text-gray-700 mb-3">Language (語言)</p>
+                        <div role="group" aria-labelledby={`${fid}-language`} className="flex flex-wrap gap-2">
                             {Object.entries(languages)
                                 .filter(([code]) => !editedPlaylist.exclude_language?.includes(code))
                                 .map(([code, name]) => {
@@ -296,6 +319,7 @@ export default function PlaylistEditDialog({
                                             key={code}
                                             type="button"
                                             onClick={() => handleLanguageToggle(code)}
+                                            aria-pressed={isSelected}
                                             className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${isSelected
                                                 ? 'bg-green-700 text-white'
                                                 : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
@@ -313,8 +337,8 @@ export default function PlaylistEditDialog({
 
                     {/* Exclude Language (排除語言) */}
                     <div>
-                        <label className="text-sm font-medium text-gray-700 block mb-3">Exclude Language (排除語言)</label>
-                        <div className="flex flex-wrap gap-2">
+                        <p id={`${fid}-exclude-language`} className="text-sm font-medium text-gray-700 mb-3">Exclude Language (排除語言)</p>
+                        <div role="group" aria-labelledby={`${fid}-exclude-language`} className="flex flex-wrap gap-2">
                             {Object.entries(languages)
                                 .filter(([code]) => !editedPlaylist.filter_language?.includes(code))
                                 .map(([code, name]) => {
@@ -324,6 +348,7 @@ export default function PlaylistEditDialog({
                                             key={code}
                                             type="button"
                                             onClick={() => handleExcludeLanguageToggle(code)}
+                                            aria-pressed={isSelected}
                                             className={`px-3 py-1 rounded-full text-sm font-medium transition-colors ${isSelected
                                                 ? 'bg-red-600 text-white'
                                                 : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
@@ -340,65 +365,33 @@ export default function PlaylistEditDialog({
                     </div>
 
                     {/* Favorites */}
-                    <div>
-                        <label className="text-sm font-medium text-gray-700 block mb-2">Favorites</label>
-                        <Select
-                            value={editedPlaylist.filter_favorites === null || editedPlaylist.filter_favorites === undefined ? 'NONE' : editedPlaylist.filter_favorites.toString()}
-                            onValueChange={(value) => {
-                                if (value === 'NONE') {
-                                    handleInputChange('filter_favorites', null);
-                                } else {
-                                    handleInputChange('filter_favorites', value === 'true');
-                                }
-                            }}
-                        >
-                            <SelectTrigger className="w-full">
-                                <SelectValue placeholder="不設定" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="NONE">不設定</SelectItem>
-                                <SelectItem value="true">是</SelectItem>
-                                <SelectItem value="false">否</SelectItem>
-                            </SelectContent>
-                        </Select>
-                    </div>
+                    <RadioChoices
+                        legend="Favorites"
+                        name={`${fid}-favorites`}
+                        value={editedPlaylist.filter_favorites === null || editedPlaylist.filter_favorites === undefined ? 'NONE' : String(editedPlaylist.filter_favorites) as 'true' | 'false'}
+                        options={[['NONE', '不設定'], ['true', '是'], ['false', '否']]}
+                        onChange={(value) => handleInputChange('filter_favorites', value === 'NONE' ? null : value === 'true')}
+                    />
 
                     {/* Sort Method */}
-                    <div>
-                        <label className="text-sm font-medium text-gray-700 block mb-2">Sort Method (排序方式)</label>
-                        <Select
-                            value={editedPlaylist.sort_method || 'creation_time'}
-                            onValueChange={(value) => handleInputChange('sort_method', value)}
-                        >
-                            <SelectTrigger className="w-full">
-                                <SelectValue placeholder="選擇排序方式" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                <SelectItem value="creation_time">加入時間 (Date Added)</SelectItem>
-                                <SelectItem value="title">標題 (TitleSort)</SelectItem>
-                            </SelectContent>
-                        </Select>
-                    </div>
+                    <RadioChoices
+                        legend="Sort Method (排序方式)"
+                        name={`${fid}-sort`}
+                        value={editedPlaylist.sort_method || 'creation_time'}
+                        options={[['creation_time', '加入時間 (Date Added)'], ['title', '標題 (TitleSort)']]}
+                        onChange={(value) => handleInputChange('sort_method', value)}
+                    />
 
                     {/* System Level Playlist */}
                     <div className="flex flex-col gap-2 pb-4">
-                        <div className="flex items-center gap-2">
-                            <label className="text-sm font-medium text-gray-700">系統等級播放清單</label>
-                            <TooltipProvider>
-                                <Tooltip>
-                                    <TooltipTrigger asChild>
-                                        <Info className="h-4 w-4 text-gray-400 cursor-help" />
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                        <div className="text-sm">
-                                            <p><strong>開啟：</strong>存入 /Music/Playlist</p>
-                                            <p><strong>關閉：</strong>存入 /Music/{editedPlaylist.base_folder || '音樂資料夾'}/Playlist</p>
-                                        </div>
-                                    </TooltipContent>
-                                </Tooltip>
-                            </TooltipProvider>
-                        </div>
+                        <label className="text-sm font-medium text-gray-700" htmlFor={`${fid}-system`}>系統等級播放清單</label>
+                        {/* 說明直接顯示（原本的 Tooltip 會被原生 dialog 擋住，觸控裝置也無法 hover） */}
+                        <p id={`${fid}-system-help`} className="text-xs text-gray-500">
+                            開啟：存入 /Music/Playlist；關閉：存入 /Music/{editedPlaylist.base_folder || '音樂資料夾'}/Playlist
+                        </p>
                         <Switch
+                            id={`${fid}-system`}
+                            aria-describedby={`${fid}-system-help`}
                             checked={editedPlaylist.is_system_level ?? false}
                             onCheckedChange={(checked) => handleInputChange('is_system_level', checked)}
                         />
