@@ -92,7 +92,8 @@ test('a failed filename update stops the move', async ({ page }) => {
     control.rejectFinalize = true
     await filenameInput.fill('03 - 自訂名稱.flac')
     await page.getByRole('button', { name: '確認移動檔案', exact: true }).click()
-    await expect(page.getByText('Request failed with status code 500')).toBeVisible()
+    // 顯示後端回傳的錯誤說明，而不是只有狀態碼
+    await expect(page.getByText('test finalization failure')).toBeVisible()
     expect(requests.filter(request => request.endpoint === 'music-import/confirm-move')).toHaveLength(0)
     await expect(filenameInput).toBeEnabled()
 })

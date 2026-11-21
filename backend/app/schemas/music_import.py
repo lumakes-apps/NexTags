@@ -159,3 +159,17 @@ class GenerateReplayGainResponse(BaseModel):
     success: bool
     message: str
     replaygain_applied: bool
+
+class ResumeImportRequest(BaseModel):
+    file_id: str
+    # 進度已遺失的暫存檔需要重新指定目標資料夾
+    base_folder: Optional[str] = None
+
+class ResumeImportResponse(BaseModel):
+    success: bool
+    file_id: str
+    status: ImportStatus
+    next_action: Optional[str]
+    file_info: Dict[str, Any]
+    # 進度已遺失、從暫存檔重新建立
+    recovered: bool

@@ -111,7 +111,8 @@ class ImportEditedTagsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.audio_path.exists())
         self.assertFalse(Path(old_preview.preview_final_path).exists())
         self.assertEqual(music_import.read_audio_tags(str(expected))['title'], '求神呐')
-        self.assertEqual(session['status'], ImportStatus.COMPLETED)
+        # 進度存在 Redis（測試時為記憶體），讀取回傳副本，需重新讀取
+        self.assertEqual(music_import.import_sessions[self.file_id]['status'], ImportStatus.COMPLETED)
 
     async def test_failed_write_does_not_publish_new_filename(self):
         await music_import.extract_music_tags(ExtractTagsRequest(file_id=self.file_id))
