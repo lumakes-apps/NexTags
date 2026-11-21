@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Button } from '@/components/ui/button';
+import { Link } from 'react-router-dom';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import TaskStatusDialog from '@/components/TaskStatusDialog';
+import { importStatusLabel } from '@/lib/importStatus';
 
 interface CacheStatistics {
     actual_files: {
@@ -206,17 +208,24 @@ export default function Cache() {
                                             </td>
                                             <td className="px-4 py-3">
                                                 <span className="inline-block px-2 py-1 text-xs rounded bg-blue-100 text-blue-800">
-                                                    {file.status}
+                                                    {importStatusLabel(file.status)}
                                                 </span>
                                             </td>
                                             <td className="px-4 py-3 text-gray-600">{file.base_folder}</td>
                                             <td className="px-4 py-3 text-gray-600 text-sm">
                                                 {formatDate(file.created_at)}
                                             </td>
-                                            <td className="px-4 py-3 text-center">
+                                            <td className="px-4 py-3 text-center whitespace-nowrap">
+                                                {/* 接續匯入：在新增歌曲頁從中斷的步驟繼續；進度遺失的會在那邊選目標資料夾 */}
+                                                <Link to={`/new?resume=${encodeURIComponent(file.file_id)}`}
+                                                    aria-label={`繼續匯入 ${file.original_filename}`}
+                                                    className={buttonVariants({ variant: 'outline', size: 'sm', className: 'mr-1' })}>
+                                                    繼續
+                                                </Link>
                                                 <Button
                                                     variant="ghost"
                                                     size="sm"
+                                                    aria-label={`刪除 ${file.original_filename}`}
                                                     onClick={() => handleDeleteClick(file.file_id, file.original_filename)}
                                                     className="text-red-600 hover:text-red-700 hover:bg-red-50"
                                                 >

@@ -19,6 +19,7 @@ from app.schemas.music_import import (
     ConfirmMoveRequest, ConfirmMoveResponse, ImportStatusRequest, ImportStatusResponse,
     ListPendingImportsResponse, DeleteImportRequest, DeleteImportResponse,
     GenerateReplayGainRequest, GenerateReplayGainResponse,
+    ResumeImportRequest, ResumeImportResponse,
     ImportStatus, AudioFormat
 )
 from app.dependencies.mp3tag_reader import read_audio_tags
@@ -30,11 +31,11 @@ from app.dependencies.utils.cover_art import save_cover_art, extract_cover_from_
 from app.dependencies.utils.replaygain import generate_replaygain
 from app.dependencies.utils.path_sanitizer import sanitize_file_name, sanitize_folder_name
 from app.dependencies.logger import logger
+from app.services.import_sessions import import_sessions
 
 router = APIRouter(prefix="/music-import", tags=["music-import"])
 
-# 全局變數來追蹤匯入狀態
-import_sessions: Dict[str, Dict[str, Any]] = {}
+# 匯入進度存在 Redis（app/services/import_sessions.py），重啟後仍可接續
 chunk_upload_sessions: Dict[str, Dict[str, Any]] = {}
 
 _UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
@@ -173,65 +174,30 @@ def get_file_format(filename: str) -> AudioFormat:
     else:
         raise ValueError(f"不支援的音訊格式: {extension}")
 
-# 匯入 session 仍為行程內字典（完整 Redis 化牽涉整個匯入精靈狀態模型且
-# 無法在此完整驗證，留作後續）；此處先修記憶體洩漏：終態且過期者清除，
-# 並設總量硬上限，避免長期累積無限成長。
-_MAX_IMPORT_SESSIONS = 1000
-_IMPORT_SESSION_TTL = timedelta(hours=6)
-_IMPORT_TERMINAL = {ImportStatus.COMPLETED, ImportStatus.FAILED, "completed", "failed"}
-
-
-def _cleanup_import_sessions():
-    """清理已結束且過期的匯入 session，並限制總量。"""
-    try:
-        now = datetime.now()
-
-        # 1) 移除終態且超過 TTL 者
-        for fid in list(import_sessions.keys()):
-            session = import_sessions.get(fid) or {}
-            if session.get('status') in _IMPORT_TERMINAL:
-                ts = session.get('updated_at') or session.get('created_at')
-                if isinstance(ts, datetime) and (now - ts) > _IMPORT_SESSION_TTL:
-                    import_sessions.pop(fid, None)
-
-        # 2) 硬上限：先逐出最舊的終態 session，仍超量再逐出最舊者
-        if len(import_sessions) > _MAX_IMPORT_SESSIONS:
-            def _age_key(item):
-                session = item[1] or {}
-                return session.get('updated_at') or session.get('created_at') or now
-
-            ordered = sorted(import_sessions.items(), key=_age_key)
-            for fid, session in ordered:
-                if len(import_sessions) <= _MAX_IMPORT_SESSIONS:
-                    break
-                if (session or {}).get('status') in _IMPORT_TERMINAL:
-                    import_sessions.pop(fid, None)
-            for fid, _ in ordered:
-                if len(import_sessions) <= _MAX_IMPORT_SESSIONS:
-                    break
-                import_sessions.pop(fid, None)
-    except Exception as e:
-        logger.warning(f"清理匯入 session 時發生錯誤: {e}")
-
-
 def update_import_status(file_id: str, status: ImportStatus, **kwargs):
-    """更新匯入狀態"""
-    if file_id not in import_sessions:
-        import_sessions[file_id] = {
-            'created_at': datetime.now(),
-            'status': status,
-            'errors': []
-        }
-    else:
-        import_sessions[file_id]['status'] = status
+    """更新匯入狀態並寫回 Redis"""
+    import_sessions.update(file_id, status=status, **kwargs)
 
-    # 更新額外資訊
-    for key, value in kwargs.items():
-        import_sessions[file_id][key] = value
 
-    import_sessions[file_id]['updated_at'] = datetime.now()
+def add_import_error(file_id: str, message: str):
+    import_sessions.add_error(file_id, message)
 
-    _cleanup_import_sessions()
+
+def next_action_for(session: Dict[str, Any]):
+    """依目前狀態決定接續時的下一步（前端據此跳到對應步驟）"""
+    # 從 Redis 讀回的狀態是字串；以 .value 為鍵（str 列舉的 hash 與字串不同，不能直接當字典鍵比對）
+    status = ImportStatus(session.get('status')).value if session.get('status') else ''
+    if status == ImportStatus.UPLOADED.value:
+        return "convert" if session.get('needs_conversion') else "extract-tags"
+    return {
+        ImportStatus.CONVERTED.value: "extract-tags",
+        ImportStatus.TAGS_EXTRACTED.value: "edit-tags",
+        ImportStatus.TAGS_EDITED.value: "check-artist",
+        ImportStatus.ARTIST_READY.value: "artist-image" if session.get('needs_artist_image') else "process-album",
+        ImportStatus.ALBUM_READY.value: "finalize",
+        ImportStatus.READY_TO_MOVE.value: "confirm-move",
+    }.get(status)
+
 
 @router.post("/upload/init", response_model=ChunkUploadInitResponse)
 async def init_chunked_upload(request: ChunkUploadInitRequest):
@@ -581,8 +547,7 @@ def _convert_audio_file_impl(request: ConvertFileRequest):
         raise
     except Exception as e:
         logger.error(f"檔案轉換失敗: {str(e)}")
-        if request.file_id in import_sessions:
-            import_sessions[request.file_id]['errors'].append(f"轉換失敗: {str(e)}")
+        add_import_error(request.file_id, f"轉換失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"檔案轉換失敗: {str(e)}")
 
 def _is_json_value(value: Any) -> bool:
@@ -639,6 +604,7 @@ def _extract_music_tags_impl(request: ExtractTagsRequest):
             raise HTTPException(status_code=500, detail="無法讀取檔案標籤")
 
         # 自動生成 ReplayGain
+        replaygain_applied = False
         try:
             logger.info(f"自動生成 ReplayGain: {temp_path}")
             success, message = generate_replaygain(temp_path)
@@ -646,13 +612,11 @@ def _extract_music_tags_impl(request: ExtractTagsRequest):
                 logger.info(f"ReplayGain 生成成功: {message}")
                 # 重新讀取標籤以獲取 ReplayGain 值
                 tags = read_import_tags(temp_path)
-                import_sessions[request.file_id]['replaygain_applied'] = True
+                replaygain_applied = True
             else:
                 logger.warning(f"ReplayGain 生成失敗（非致命錯誤）: {message}")
-                import_sessions[request.file_id]['replaygain_applied'] = False
         except Exception as rg_error:
             logger.warning(f"ReplayGain 生成失敗（非致命錯誤）: {str(rg_error)}")
-            import_sessions[request.file_id]['replaygain_applied'] = False
 
         # 生成建議的檔案名稱
         suggested_filename = generate_suggested_filename(tags, session.get('format', 'flac'))
@@ -662,7 +626,8 @@ def _extract_music_tags_impl(request: ExtractTagsRequest):
             request.file_id,
             ImportStatus.TAGS_EXTRACTED,
             extracted_tags=tags,
-            suggested_filename=suggested_filename
+            suggested_filename=suggested_filename,
+            replaygain_applied=replaygain_applied,
         )
 
         logger.info(f"標籤提取成功: {temp_path}")
@@ -678,8 +643,7 @@ def _extract_music_tags_impl(request: ExtractTagsRequest):
         raise
     except Exception as e:
         logger.error(f"標籤提取失敗: {str(e)}")
-        if request.file_id in import_sessions:
-            import_sessions[request.file_id]['errors'].append(f"標籤提取失敗: {str(e)}")
+        add_import_error(request.file_id, f"標籤提取失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"標籤提取失敗: {str(e)}")
 
 @router.post("/update-tags", response_model=UpdateTagsResponse)
@@ -732,8 +696,7 @@ def _update_music_tags_impl(request: UpdateTagsRequest):
         raise
     except Exception as e:
         logger.error(f"標籤更新失敗: {str(e)}")
-        if request.file_id in import_sessions:
-            import_sessions[request.file_id]['errors'].append(f"標籤更新失敗: {str(e)}")
+        add_import_error(request.file_id, f"標籤更新失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"標籤更新失敗: {str(e)}")
 
 @router.get("/status", response_model=ImportStatusResponse)
@@ -744,29 +707,14 @@ async def get_import_status(file_id: str):
             raise HTTPException(status_code=404, detail="找不到檔案ID")
         
         session = import_sessions[file_id]
-        
-        # 判斷下一步動作
-        status = session.get('status')
-        next_action = None
-        
-        if status == ImportStatus.UPLOADED:
-            if session.get('needs_conversion'):
-                next_action = "convert"
-            else:
-                next_action = "extract-tags"
-        elif status == ImportStatus.CONVERTED:
-            next_action = "extract-tags"
-        elif status == ImportStatus.TAGS_EXTRACTED:
-            next_action = "update-tags"
-        elif status == ImportStatus.TAGS_EDITED:
-            next_action = "check-artist"
-        
+        status = ImportStatus(session.get('status'))
+
         return ImportStatusResponse(
             success=True,
             file_id=file_id,
             status=status,
             current_step=status.value,
-            next_action=next_action,
+            next_action=next_action_for(session),
             file_info=session,
             errors=session.get('errors', [])
         )
@@ -789,8 +737,8 @@ async def list_pending_imports():
             for filename in os.listdir(wait_import_path):
                 file_path = os.path.join(wait_import_path, filename)
 
-                # 跳過目錄
-                if os.path.isdir(file_path):
+                # 跳過目錄與合併中的分片
+                if os.path.isdir(file_path) or filename.endswith('.assembling'):
                     continue
 
                 # 獲取檔案資訊
@@ -805,6 +753,7 @@ async def list_pending_imports():
                 status = 'unknown'
                 base_folder = ''
                 errors = []
+                next_action = None
 
                 if '_' in filename:
                     parts = filename.split('_', 1)
@@ -815,11 +764,12 @@ async def list_pending_imports():
                         original_filename = parts[1]
 
                         # 嘗試從 import_sessions 獲取額外資訊
-                        if file_id in import_sessions:
-                            session = import_sessions[file_id]
+                        session = import_sessions.get(file_id)
+                        if session is not None:
                             status = session.get('status', 'unknown')
                             base_folder = session.get('base_folder', '')
                             errors = session.get('errors', [])
+                            next_action = next_action_for(session)
                         else:
                             status = 'orphaned'  # 檔案存在但沒有對應的會話
                 else:
@@ -834,7 +784,10 @@ async def list_pending_imports():
                     'created_at': created_at,
                     'updated_at': modified_at,
                     'base_folder': base_folder,
-                    'errors': errors
+                    'errors': errors,
+                    'next_action': next_action,
+                    # 進度已遺失（或不是透過匯入上傳的檔案）：接續時要重新選目標資料夾
+                    'needs_base_folder': not base_folder,
                 })
 
         # 按建立時間排序（最新的在前）
@@ -851,6 +804,93 @@ async def list_pending_imports():
     except Exception as e:
         logger.error(f"列出待處理匯入失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"列出待處理匯入失敗: {str(e)}")
+
+def _find_wait_import_file(file_id: str):
+    """在 WaitImport 找出 file_id 對應的檔案：{file_id}_{原檔名} 或檔名本身"""
+    wait_import_path = get_wait_import_path()
+    for filename in sorted(os.listdir(wait_import_path)):
+        path = os.path.join(wait_import_path, filename)
+        if os.path.isdir(path) or filename.endswith('.assembling'):
+            continue
+        if filename.startswith(file_id + '_') or filename == file_id:
+            return filename, path
+    return None, None
+
+
+@router.post("/resume", response_model=ResumeImportResponse)
+async def resume_import(request: ResumeImportRequest):
+    """接續匯入：回傳目前進度與下一步；進度已遺失時從 WaitImport 的暫存檔重新建立（從讀取標籤開始，
+    已寫入檔案的標籤會保留），需要指定目標資料夾。"""
+    try:
+        session = import_sessions.get(request.file_id)
+        recovered = False
+
+        if session is not None:
+            status = str(session.get('status') or '')
+            if status in (ImportStatus.COMPLETED.value, ImportStatus.FAILED.value):
+                raise HTTPException(status_code=400, detail="這個匯入已經結束，無法接續")
+            temp_path = session.get('temp_path')
+            if not temp_path or not os.path.exists(temp_path):
+                raise HTTPException(status_code=404, detail="暫存檔案已不存在，請重新上傳")
+            if not session.get('base_folder'):
+                if not request.base_folder:
+                    raise HTTPException(status_code=400, detail="請選擇目標資料夾")
+                validate_base_folder(request.base_folder)
+                session = import_sessions.update(request.file_id, base_folder=request.base_folder)
+            file_id = request.file_id
+        else:
+            filename, path = _find_wait_import_file(request.file_id)
+            if path is None:
+                raise HTTPException(status_code=404, detail="找不到這個暫存檔案")
+            if not request.base_folder:
+                raise HTTPException(status_code=400, detail="匯入進度已遺失，請選擇目標資料夾後重新開始處理")
+            validate_base_folder(request.base_folder)
+
+            prefix, _, rest = filename.partition('_')
+            if prefix == request.file_id and rest:
+                file_id, original_filename = request.file_id, rest
+            else:
+                # 不是透過匯入上傳的檔案：補上 ID 前綴，之後列表才能對應到進度
+                file_id, original_filename = generate_file_id(), filename
+                new_path = os.path.join(os.path.dirname(path), f"{file_id}_{filename}")
+                os.rename(path, new_path)
+                path = new_path
+
+            try:
+                audio_format = get_file_format(original_filename)
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error))
+
+            update_import_status(
+                file_id,
+                ImportStatus.UPLOADED,
+                original_filename=original_filename,
+                temp_path=path,
+                base_folder=request.base_folder,
+                format=audio_format.value,
+                needs_conversion=needs_conversion(os.path.splitext(original_filename)[1]),
+                file_size=os.path.getsize(path),
+                recovered=True,
+            )
+            session = import_sessions[file_id]
+            recovered = True
+            logger.info(f"從暫存檔重新建立匯入進度: {path}")
+
+        return ResumeImportResponse(
+            success=True,
+            file_id=file_id,
+            status=ImportStatus(session.get('status')),
+            next_action=next_action_for(session),
+            file_info=session,
+            recovered=recovered,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"接續匯入失敗: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"接續匯入失敗: {str(e)}")
+
 
 @router.delete("/delete", response_model=DeleteImportResponse)
 async def delete_import(request: DeleteImportRequest):
@@ -902,6 +942,14 @@ async def delete_import(request: DeleteImportRequest):
     except Exception as e:
         logger.error(f"刪除匯入任務失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"刪除匯入任務失敗: {str(e)}")
+
+ARTIST_IMAGE_FILES = ('artist.jpg', 'artist.jpeg', 'artist.png')
+
+
+def _artist_has_image(base_folder: str, artist_name: str) -> bool:
+    folder = os.path.join(get_music_base_path(), base_folder, "Music", sanitize_folder_name(artist_name))
+    return any(os.path.exists(os.path.join(folder, name)) for name in ARTIST_IMAGE_FILES)
+
 
 @router.post("/check-artist", response_model=CheckArtistResponse)
 async def check_artist_folder(request: CheckArtistRequest):
@@ -998,8 +1046,7 @@ async def check_artist_folder(request: CheckArtistRequest):
         raise
     except Exception as e:
         logger.error(f"檢查歌手資料夾失敗: {str(e)}")
-        if request.file_id in import_sessions:
-            import_sessions[request.file_id]['errors'].append(f"檢查歌手資料夾失敗: {str(e)}")
+        add_import_error(request.file_id, f"檢查歌手資料夾失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"檢查歌手資料夾失敗: {str(e)}")
 
 @router.post("/upload-artist-image", response_model=UploadArtistImageResponse)
@@ -1049,12 +1096,17 @@ async def upload_artist_image(
                     break
                 buffer.write(chunk)
         
-        # 更新匯入狀態
+        # 更新匯入狀態：多位歌手時，其他歌手還缺照片就維持「需要照片」，接續時才會再詢問
+        others_missing = [
+            artist.get('artist_name') for artist in session.get('all_artists') or []
+            if artist.get('artist_name') and artist.get('artist_name') != artist_name
+            and not _artist_has_image(base_folder, artist['artist_name'])
+        ]
         update_import_status(
             file_id,
             ImportStatus.ARTIST_READY,
             artist_image_path=artist_image_path,
-            needs_artist_image=False
+            needs_artist_image=bool(others_missing)
         )
         
         logger.info(f"歌手圖片上傳成功: {artist_image_path}")
@@ -1069,8 +1121,7 @@ async def upload_artist_image(
         raise
     except Exception as e:
         logger.error(f"歌手圖片上傳失敗: {str(e)}")
-        if file_id in import_sessions:
-            import_sessions[file_id]['errors'].append(f"歌手圖片上傳失敗: {str(e)}")
+        add_import_error(file_id, f"歌手圖片上傳失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"歌手圖片上傳失敗: {str(e)}")
 
 @router.post("/process-album", response_model=ProcessAlbumResponse)
@@ -1165,8 +1216,7 @@ def _process_album_folder_impl(request: ProcessAlbumRequest):
         raise
     except Exception as e:
         logger.error(f"專輯處理失敗: {str(e)}")
-        if request.file_id in import_sessions:
-            import_sessions[request.file_id]['errors'].append(f"專輯處理失敗: {str(e)}")
+        add_import_error(request.file_id, f"專輯處理失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"專輯處理失敗: {str(e)}")
 
 @router.post("/finalize", response_model=FinalizeFileResponse)
@@ -1222,8 +1272,7 @@ async def finalize_file_preparation(request: FinalizeFileRequest):
         raise
     except Exception as e:
         logger.error(f"檔案準備失敗: {str(e)}")
-        if request.file_id in import_sessions:
-            import_sessions[request.file_id]['errors'].append(f"檔案準備失敗: {str(e)}")
+        add_import_error(request.file_id, f"檔案準備失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"檔案準備失敗: {str(e)}")
 
 def _confirm_move_sync(temp_path: str, preview_final_path: str, replaygain_applied: bool) -> bool:
@@ -1295,14 +1344,13 @@ async def confirm_file_move(request: ConfirmMoveRequest):
             preview_final_path,
             bool(session.get('replaygain_applied')),
         )
-        session['replaygain_applied'] = replaygain_applied
-
         # 更新匯入狀態
         update_import_status(
             request.file_id,
             ImportStatus.COMPLETED,
             final_path=preview_final_path,
-            completed_at=datetime.now()
+            completed_at=datetime.now(),
+            replaygain_applied=replaygain_applied,
         )
         
         logger.info(f"檔案移動完成: {temp_path} -> {preview_final_path}")
@@ -1317,8 +1365,7 @@ async def confirm_file_move(request: ConfirmMoveRequest):
         raise
     except Exception as e:
         logger.error(f"檔案移動失敗: {str(e)}")
-        if request.file_id in import_sessions:
-            import_sessions[request.file_id]['errors'].append(f"檔案移動失敗: {str(e)}")
+        add_import_error(request.file_id, f"檔案移動失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"檔案移動失敗: {str(e)}")
 
 @router.post("/generate-replaygain", response_model=GenerateReplayGainResponse)
@@ -1345,7 +1392,7 @@ def _generate_replaygain_tags_impl(request: GenerateReplayGainRequest):
 
         if success:
             # 更新匯入狀態
-            import_sessions[request.file_id]['replaygain_applied'] = True
+            import_sessions.update(request.file_id, replaygain_applied=True)
             logger.info(f"ReplayGain 生成成功: {temp_path}")
 
             return GenerateReplayGainResponse(
@@ -1360,6 +1407,5 @@ def _generate_replaygain_tags_impl(request: GenerateReplayGainRequest):
         raise
     except Exception as e:
         logger.error(f"ReplayGain 生成失敗: {str(e)}")
-        if request.file_id in import_sessions:
-            import_sessions[request.file_id]['errors'].append(f"ReplayGain 生成失敗: {str(e)}")
+        add_import_error(request.file_id, f"ReplayGain 生成失敗: {str(e)}")
         raise HTTPException(status_code=500, detail=f"ReplayGain 生成失敗: {str(e)}")

@@ -29,6 +29,8 @@ A guided multi-step process to add new music to the library:
 6. Move files to the correct library path (artist, album, and file names are cleaned to be FAT-safe; tags keep the original text)
 7. Generate ReplayGain tags
 
+Import progress is stored in Redis, so leaving the page or restarting the backend does not lose it. Unfinished imports are listed at the top of the import page and on the Cache page. Use **繼續** to pick up from the step where the import stopped, with no re-upload. A file whose progress was lost (from before this change, or without Redis) can still be processed again from its staged copy. You pick a target folder, and tags already written to the file are kept.
+
 ### AI Lyrics Processing
 Uses the Anthropic Claude API to clean up LRC lyrics. The default instructions below can be edited on the Settings page:
 - Normalize LRC timestamps to `[mm:ss.xx]`

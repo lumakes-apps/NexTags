@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { useBlocker, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -6,6 +7,10 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import MusicImportTagEditor from '@/components/MusicImportTagEditor'
 import { api } from '@/lib/api'
+import {
+    IMPORT_PROGRESS, deletePendingImport, errorText, fetchPendingImports, importStatusLabel, tagText,
+    type PendingImport,
+} from '@/lib/importStatus'
 
 // 匯入狀態枚舉
 enum ImportStatus {
@@ -35,6 +40,7 @@ interface ImportSession {
     album_name?: string
     final_filename?: string
     preview_final_path?: string
+    needs_artist_image?: boolean
     errors?: string[]
 }
 
@@ -75,11 +81,49 @@ export default function NewMusicPage() {
     const [progress, setProgress] = useState<number>(0)
     const [isDragging, setIsDragging] = useState(false)
     const [isArtistImageDragging, setIsArtistImageDragging] = useState(false)
+    // 未完成的匯入（WaitImport 裡的暫存檔）
+    const [pendingImports, setPendingImports] = useState<PendingImport[]>([])
+    // 進度遺失的檔案要重新選的目標資料夾（依 file_id）
+    const [recoverFolders, setRecoverFolders] = useState<Record<string, string>>({})
+    const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
+    const [searchParams, setSearchParams] = useSearchParams()
 
-    // 載入基礎資料夾選項
+    const loadPendingImports = useCallback(async () => {
+        try {
+            setPendingImports(await fetchPendingImports())
+        } catch (error) {
+            console.error('載入未完成的匯入失敗:', error)
+        }
+    }, [])
+
+    // 載入基礎資料夾選項與未完成的匯入
     useEffect(() => {
         fetchBaseFolders()
-    }, [])
+        loadPendingImports()
+    }, [loadPendingImports])
+
+    // 處理中或標籤編輯中離開會中斷目前這一步（已完成的步驟都已存檔，之後可以接續）
+    const leaveWarning = isLoading
+        ? '目前步驟還在處理中，離開會中斷這一步（已完成的步驟會保留，之後可以接續）。確定要離開？'
+        : showTagEditor
+            ? '標籤尚未儲存，離開會捨棄這次的修改（匯入進度會保留，之後可以接續）。確定要離開？'
+            : ''
+    const blocker = useBlocker(({ currentLocation, nextLocation }) =>
+        !!leaveWarning && currentLocation.pathname !== nextLocation.pathname)
+    useEffect(() => {
+        if (blocker.state !== 'blocked') return
+        if (window.confirm(leaveWarning || '確定要離開？')) blocker.proceed()
+        else blocker.reset()
+    }, [blocker, leaveWarning])
+    useEffect(() => {
+        if (!leaveWarning) return
+        const warn = (event: BeforeUnloadEvent) => {
+            event.preventDefault()
+            event.returnValue = ''
+        }
+        window.addEventListener('beforeunload', warn)
+        return () => window.removeEventListener('beforeunload', warn)
+    }, [leaveWarning])
 
     const fetchBaseFolders = async () => {
         try {
@@ -168,7 +212,7 @@ export default function NewMusicPage() {
 
         } catch (error) {
             console.error('檔案上傳失敗:', error)
-            setError(error instanceof Error ? error.message : '檔案上傳失敗')
+            setError(errorText(error, '檔案上傳失敗'))
         } finally {
             setIsLoading(false)
         }
@@ -227,7 +271,7 @@ export default function NewMusicPage() {
 
         } catch (error) {
             console.error('檔案轉換失敗:', error)
-            setError(error instanceof Error ? error.message : '檔案轉換失敗')
+            setError(errorText(error, '檔案轉換失敗'))
         }
     }
 
@@ -246,7 +290,7 @@ export default function NewMusicPage() {
 
         } catch (error) {
             console.error('標籤提取失敗:', error)
-            setError(error instanceof Error ? error.message : '標籤提取失敗')
+            setError(errorText(error, '標籤提取失敗'))
         }
     }
 
@@ -276,7 +320,7 @@ export default function NewMusicPage() {
 
         } catch (error) {
             console.error('標籤更新失敗:', error)
-            setError(error instanceof Error ? error.message : '標籤更新失敗')
+            setError(errorText(error, '標籤更新失敗'))
         }
     }
 
@@ -305,7 +349,7 @@ export default function NewMusicPage() {
 
         } catch (error) {
             console.error('檢查歌手資料夾失敗:', error)
-            setError(error instanceof Error ? error.message : '檢查歌手資料夾失敗')
+            setError(errorText(error, '檢查歌手資料夾失敗'))
         }
     }
 
@@ -343,7 +387,7 @@ export default function NewMusicPage() {
 
         } catch (error) {
             console.error('歌手圖片上傳失敗:', error)
-            setError(error instanceof Error ? error.message : '歌手圖片上傳失敗')
+            setError(errorText(error, '歌手圖片上傳失敗'))
         }
     }
 
@@ -406,7 +450,7 @@ export default function NewMusicPage() {
 
         } catch (error) {
             console.error('專輯處理失敗:', error)
-            setError(error instanceof Error ? error.message : '專輯處理失敗')
+            setError(errorText(error, '專輯處理失敗'))
         }
     }
 
@@ -452,15 +496,112 @@ export default function NewMusicPage() {
                 setAlbumName('')
                 setFinalFilename('')
                 setError(null)
+                loadPendingImports()
             }, 2000)
 
         } catch (error) {
             console.error('檔案移動失敗:', error)
-            setError(error instanceof Error ? error.message : '檔案移動失敗')
+            setError(errorText(error, '檔案移動失敗'))
         } finally {
             setIsLoading(false)
         }
     }
+
+    // 依目前狀態接續下一步（離開後回來、backend 重啟後都適用）
+    const continueFrom = async (session: ImportSession) => {
+        const fileId = session.file_id
+        const tags = session.extracted_tags ?? {}
+        const artist = session.artist_name || tagText(tags.artist)
+        const album = session.album_name || tagText(tags.album)
+        const suggested = session.suggested_filename || `01 - ${session.original_filename}`
+        setArtistName(artist)
+        setAlbumName(album)
+        setProgress(IMPORT_PROGRESS[session.status] ?? 20)
+        switch (session.status) {
+            case ImportStatus.UPLOADED:
+                return session.needs_conversion ? convertFile(fileId) : extractTags(fileId)
+            case ImportStatus.CONVERTED:
+                return extractTags(fileId)
+            case ImportStatus.TAGS_EXTRACTED:
+                setShowTagEditor(true)
+                return
+            case ImportStatus.TAGS_EDITED:
+                return checkArtist(fileId, artist, album)
+            case ImportStatus.ARTIST_READY:
+                // 還有歌手缺照片就重新檢查（已上傳的會被略過），否則直接處理專輯
+                return session.needs_artist_image ? checkArtist(fileId, artist, album) : processAlbum(fileId, artist, album)
+            case ImportStatus.ALBUM_READY:
+                setFinalFilename(suggested)
+                try {
+                    await finalizeFile(fileId, suggested)
+                } catch (error) {
+                    setError(errorText(error, '檔案準備失敗'))
+                }
+                return
+            case ImportStatus.READY_TO_MOVE:
+                setFinalFilename(session.final_filename || suggested)
+                return
+        }
+    }
+
+    // 接續某個未完成的匯入；進度遺失的檔案需要 baseFolder
+    const resumeImport = async (fileId: string, baseFolder?: string) => {
+        setIsLoading(true)
+        setError(null)
+        try {
+            const data = await api.post('music-import/resume', { file_id: fileId, base_folder: baseFolder || undefined })
+            const session: ImportSession = { ...data.file_info, file_id: data.file_id }
+            setCurrentSession(session)
+            await continueFrom(session)
+        } catch (error) {
+            setError(errorText(error, '無法接續這個匯入'))
+            await loadPendingImports()
+        } finally {
+            setIsLoading(false)
+        }
+    }
+
+    const continueCurrent = async () => {
+        if (!currentSession) return
+        setIsLoading(true)
+        setError(null)
+        try {
+            await continueFrom(currentSession)
+        } finally {
+            setIsLoading(false)
+        }
+    }
+
+    // 先放著，回到上傳畫面（進度已存，之後可從這裡或快取頁接續）
+    const pauseImport = async () => {
+        setCurrentSession(null)
+        setProgress(0)
+        setError(null)
+        setShowTagEditor(false)
+        setShowArtistImageDialog(false)
+        await loadPendingImports()
+    }
+
+    const deletePending = async (fileId: string) => {
+        try {
+            await deletePendingImport(fileId)
+            setConfirmingDelete(null)
+            await loadPendingImports()
+        } catch (error) {
+            setError(errorText(error, '刪除失敗'))
+        }
+    }
+
+    // 從快取頁的「繼續」進來：/new?resume=<file_id>
+    const resumeParam = searchParams.get('resume')
+    useEffect(() => {
+        if (!resumeParam || pendingImports.length === 0) return
+        const target = pendingImports.find(item => item.file_id === resumeParam)
+        setSearchParams({}, { replace: true })
+        // 進度遺失的要先選目標資料夾，留在清單上讓使用者選
+        if (target && !target.needs_base_folder) resumeImport(target.file_id)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [resumeParam, pendingImports])
 
     // 刷新會話狀態
     const refreshSessionStatus = async (fileId: string) => {
@@ -492,6 +633,7 @@ export default function NewMusicPage() {
                 setCurrentSession(null)
                 setProgress(0)
                 setError(null)
+                await loadPendingImports()
             }
         } catch (error) {
             console.error('取消匯入失敗:', error)
@@ -523,6 +665,73 @@ export default function NewMusicPage() {
                 <div className="mb-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded">
                     {error}
                 </div>
+            )}
+
+            {/* 未完成的匯入：可接續或刪除 */}
+            {!currentSession && pendingImports.length > 0 && (
+                <Card className="mb-6" data-testid="pending-imports">
+                    <CardHeader>
+                        <CardTitle>未完成的匯入（{pendingImports.length}）</CardTitle>
+                        <CardDescription>上次中途離開或伺服器重啟時沒做完的歌曲，可以從中斷的地方繼續，不用重新上傳。</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <ul className="divide-y">
+                            {pendingImports.map(item => {
+                                const folder = recoverFolders[item.file_id] ?? selectedBaseFolder
+                                return (
+                                    <li key={item.file_id} className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between">
+                                        <div className="min-w-0">
+                                            <p className="truncate font-medium text-gray-900">{item.original_filename}</p>
+                                            <p className="text-sm text-gray-600">
+                                                {importStatusLabel(item.status)}
+                                                {item.base_folder && ` · ${item.base_folder}`}
+                                            </p>
+                                            {item.needs_base_folder && (
+                                                <label className="mt-1 flex items-center gap-2 text-sm text-gray-700">
+                                                    目標資料夾
+                                                    <select
+                                                        value={folder}
+                                                        onChange={event => setRecoverFolders(prev => ({ ...prev, [item.file_id]: event.target.value }))}
+                                                        className="rounded-md border border-gray-300 bg-white px-2 py-1 text-sm"
+                                                    >
+                                                        {baseFolders.map(option => (
+                                                            <option key={option.value} value={option.value}>{option.label}</option>
+                                                        ))}
+                                                    </select>
+                                                </label>
+                                            )}
+                                        </div>
+                                        <div className="flex shrink-0 gap-2">
+                                            {confirmingDelete === item.file_id ? (
+                                                <>
+                                                    <Button variant="destructive" size="sm" onClick={() => deletePending(item.file_id)}>
+                                                        確定刪除
+                                                    </Button>
+                                                    <Button variant="outline" size="sm" onClick={() => setConfirmingDelete(null)}>
+                                                        取消
+                                                    </Button>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Button size="sm" disabled={isLoading || (item.needs_base_folder && !folder)}
+                                                        aria-label={`繼續匯入 ${item.original_filename}`}
+                                                        onClick={() => resumeImport(item.file_id, item.needs_base_folder ? folder : undefined)}>
+                                                        {item.needs_base_folder ? '重新開始處理' : '繼續'}
+                                                    </Button>
+                                                    <Button variant="outline" size="sm" disabled={isLoading}
+                                                        aria-label={`刪除 ${item.original_filename}`}
+                                                        onClick={() => setConfirmingDelete(item.file_id)}>
+                                                        刪除
+                                                    </Button>
+                                                </>
+                                            )}
+                                        </div>
+                                    </li>
+                                )
+                            })}
+                        </ul>
+                    </CardContent>
+                </Card>
             )}
 
             {/* 檔案上傳區域 */}
@@ -606,7 +815,7 @@ export default function NewMusicPage() {
                     <CardHeader>
                         <CardTitle>處理中: {currentSession.original_filename}</CardTitle>
                         <CardDescription>
-                            狀態: {currentSession.status} | 格式: {currentSession.format}
+                            狀態: {importStatusLabel(currentSession.status)} | 格式: {currentSession.format}
                         </CardDescription>
                     </CardHeader>
                     <CardContent>
@@ -650,13 +859,32 @@ export default function NewMusicPage() {
                                             確認移動檔案
                                         </Button>
                                         <Button
-                                            onClick={cancelImport}
+                                            onClick={pauseImport}
                                             variant="outline"
                                             disabled={isLoading}
                                         >
-                                            取消
+                                            稍後再處理
+                                        </Button>
+                                        <Button
+                                            onClick={cancelImport}
+                                            variant="outline"
+                                            disabled={isLoading}
+                                            className="text-red-600"
+                                        >
+                                            取消並刪除
                                         </Button>
                                     </div>
+                                </div>
+                            )}
+
+                            {/* 停在某一步（例如關掉了標籤編輯器、步驟失敗）：可以繼續、先放著或刪除 */}
+                            {!isLoading && !showTagEditor && !showArtistImageDialog
+                                && currentSession.status !== ImportStatus.READY_TO_MOVE
+                                && currentSession.status !== ImportStatus.COMPLETED && (
+                                <div className="flex flex-wrap justify-end gap-2" data-testid="import-actions">
+                                    <Button onClick={continueCurrent}>繼續匯入</Button>
+                                    <Button variant="outline" onClick={pauseImport}>稍後再處理</Button>
+                                    <Button variant="outline" onClick={cancelImport} className="text-red-600">取消並刪除</Button>
                                 </div>
                             )}
 
