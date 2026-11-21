@@ -1,4 +1,4 @@
-import { Disc2, ListMusic, ServerCrash, Settings2, Tags } from 'lucide-react';
+import { Disc2, ListMusic, ServerCrash, Settings2 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 
 const LINKS = [
@@ -16,9 +16,7 @@ export default function Navbar() {
     <header className="sticky top-0 z-40 border-b bg-white/90 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-white/75">
       <div className="mx-auto flex h-16 items-center justify-between gap-2 px-4">
         <Link to="/" className="flex shrink-0 items-center gap-2 rounded-lg">
-          <span aria-hidden="true" className="flex size-8 items-center justify-center rounded-lg bg-foreground text-background">
-            <Tags className="size-[18px]" strokeWidth={2.25} />
-          </span>
+          <img src="/logo.png" alt="" width={32} height={32} className="size-8" />
           <span className="text-xl font-bold tracking-tight text-gray-900">NexTags</span>
         </Link>
         <nav aria-label="主要功能" className="flex items-center">
